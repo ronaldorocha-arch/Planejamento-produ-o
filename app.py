@@ -11,7 +11,6 @@ URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB
 
 @st.cache_data(ttl=30)
 def carregar_base():
-    """Varre a planilha para encontrar colunas de dados."""
     df_raw = pd.read_csv(URL_BASE, header=None)
     m_row, m_col, u_col, c_col, d_col = -1, -1, -1, -1, -1
     for r in range(min(20, len(df_raw))):
@@ -34,7 +33,6 @@ def carregar_base():
     return df_f[df_f['ID'] != 'nan'].dropna(subset=['UNIDADE_HORA'])
 
 def gerar_grade(h_ini, tem_ginastica):
-    """Gera os intervalos considerando pausas de café, almoço e ginástica."""
     fmt = "%H:%M"
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
     mins_pad = [50, 60, 60, 0, 60, 60, 50, 60, 60]
@@ -57,9 +55,8 @@ def gerar_grade(h_ini, tem_ginastica):
     return pd.DataFrame(grade)
 
 def calcular(df_in, df_ba, h_ini, fat, tem_gin):
-    """Calcula produção e estima horário de término."""
     slots = gerar_grade(h_ini, tem_gin)
-    df_in = df_in.merge(df_ba[['DISPLAY', 'UNIDADE_HORA']], left_on='Equipamento', right_on='DISPLAY', how='left')
+    df_in = df_in.merge(df_ba[['DISPLAY', 'ID', 'UNIDADE_HORA']], left_on='Equipamento', right_on='DISPLAY', how='left')
     df_in['CAD_R'] = df_in['UNIDADE_HORA'] * fat
     df_in['T_PC'] = 60 / df_in['CAD_R']
     df_in['FALTA'] = pd.to_numeric(df_in['Qtd'], errors='coerce').fillna(0)
@@ -70,24 +67,39 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin):
     for _, s in slots.iterrows():
         hor, t_b, f_dt = s['Horário'], s['Minutos'], s['Fim_dt']
         if t_b == 0:
-            res.append({'Horário': hor, 'Peças': 0, 'Acumulada': tot})
+            res.append({'Horário': hor, 'Modelos': 'ALMOÇO', 'Peças': 0, 'Acumulada': tot})
             continue
+        
         acum += t_b
         p_b = 0
+        modelos_no_bloco = []
+
         while c_idx < len(df_in):
             t_p = df_in.loc[c_idx, 'T_PC']
+            mod_id = df_in.loc[c_idx, 'ID']
             if pd.isna(t_p) or t_p <= 0: c_idx += 1; continue
+            
             if acum >= (t_p - 0.01):
                 q = min(math.floor(acum / t_p + 0.01), df_in.loc[c_idx, 'FALTA'])
                 if q > 0:
-                    acum -= (q * t_p); df_in.loc[c_idx, 'FALTA'] -= q
+                    acum -= (q * t_p)
+                    df_in.loc[c_idx, 'FALTA'] -= q
                     tot += q; p_b += q
+                    # Registra qual modelo e quantas peças dele saíram neste bloco
+                    modelos_no_bloco.append(f"{mod_id} ({int(q)} pçs)")
+                
                 if df_in.loc[c_idx, 'FALTA'] <= 0: c_idx += 1
                 else: break
             else: break
-        res.append({'Horário': hor, 'Peças': int(p_b), 'Acumulada': int(tot)})
+        
+        res.append({
+            'Horário': hor, 
+            'Modelos': " + ".join(modelos_no_bloco) if modelos_no_bloco else "-",
+            'Peças': int(p_b), 
+            'Acumulada': int(tot)
+        })
+        
         if tot >= total_desejado and termino == "Incompleto" and total_desejado > 0:
-            # Subtrai o tempo que sobrou do fim do bloco para achar o minuto exato
             termino = (f_dt - timedelta(minutes=acum)).strftime("%H:%M")
 
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
@@ -123,12 +135,14 @@ try:
             if not df_editor.empty:
                 r = calcular(df_editor, base, h_ini, fator, tem_gin)
                 st.divider()
-                # Exibição do Horário de Término em destaque 
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Total", f"{int(r['tot'])} pçs")
                 m2.metric("Término Estimado", r['termino'])
                 m3.metric("Eficiência", f"{fator:.2%}")
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
+                
+                # Tabela detalhada agora com a coluna "Modelos"
+                st.subheader("🗓️ Cronograma por Modelo")
                 st.table(r['df'])
 except Exception as e:
     st.error(f"Erro: {e}")
