@@ -8,19 +8,24 @@ st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=60)
 def carregar_base():
+    # Lê a planilha bruta
     df = pd.read_csv(URL_BASE)
-    df.columns.values[0] = 'MODELO'
-    df.columns.values[1] = 'UNIDADE HORA'
-    df.columns.values[-1] = 'UPS_BRUTA'
-    df['CÉLULA'] = df['UPS_BRUTA'].fillna(method='ffill')
-    # Remove linhas onde o modelo é nulo ou vazio
-    df = df.dropna(subset=['MODELO'])
-    df['MODELO'] = df['MODELO'].astype(str).str.strip()
-    df = df[df['MODELO'] != 'nan']
-    df['UNIDADE HORA'] = pd.to_numeric(df['UNIDADE HORA'], errors='coerce')
-    return df[['MODELO', 'UNIDADE HORA', 'CÉLULA']]
+    
+    # Identifica as colunas pela POSIÇÃO para evitar erro de nome
+    # Coluna 0 = MODELO | Coluna 1 = UNIDADE HORA | Última Coluna = UPS
+    new_df = pd.DataFrame()
+    new_df['MODELO'] = df.iloc[:, 0].astype(str).str.strip()
+    new_df['UNIDADE_HORA'] = pd.to_numeric(df.iloc[:, 1], errors='coerce')
+    
+    # Pega a última coluna para a UPS e preenche as células mescladas
+    ups_col = df.iloc[:, -1].fillna(method='ffill').astype(str).str.strip()
+    new_df['CELULA'] = ups_col
+    
+    # Remove linhas onde o modelo está vazio, é "nan" ou é título
+    new_df = new_df[~new_df['MODELO'].isin(['nan', 'MODELO', 'None', ''])]
+    return new_df.dropna(subset=['UNIDADE_HORA'])
 
 def gerar_grade_flexivel(hora_inicio_str):
     formato = "%H:%M"
@@ -51,9 +56,10 @@ def gerar_grade_flexivel(hora_inicio_str):
 
 def run_calculation(df_input, df_base, hora_inicio, fator):
     time_slots_df, houve_ginastica = gerar_grade_flexivel(hora_inicio)
+    # Procv manual
     models_df = df_input.merge(df_base, on='MODELO', how='left')
-    models_df['CADENCIA_REAL'] = models_df['UNIDADE HORA'] * fator
-    models_df['Tempo por peça'] = 60 / models_df['CADENCIA_REAL']
+    models_df['CADENCIA_REAL'] = models_df['UNIDADE_HORA'] * fator
+    models_df['Tempo_peca'] = 60 / models_df['CADENCIA_REAL']
     models_df['QTD_RESTANTE'] = pd.to_numeric(models_df['Qtd'], errors='coerce').fillna(0)
     
     results, tempo_acumulado, current_idx, total_produced = [], 0.0, 0, 0
@@ -65,7 +71,7 @@ def run_calculation(df_input, df_base, hora_inicio, fator):
         tempo_acumulado += tempo_bloco
         pecas_bloco = 0
         while current_idx < len(models_df):
-            t_peca = models_df.loc[current_idx, 'Tempo por peça']
+            t_peca = models_df.loc[current_idx, 'Tempo_peca']
             if pd.isna(t_peca) or t_peca <= 0: current_idx += 1; continue
             if tempo_acumulado >= (t_peca - 0.01):
                 qtd = min(math.floor(tempo_acumulado / t_peca + 0.01), models_df.loc[current_idx, 'QTD_RESTANTE'])
@@ -82,57 +88,52 @@ def run_calculation(df_input, df_base, hora_inicio, fator):
 
 # --- INTERFACE ---
 try:
-    df_completo = carregar_base()
+    df_base_total = carregar_base()
     
     st.sidebar.title("⚙️ Painel de Controle")
-    ups_selecionada = st.sidebar.selectbox("Célula (UPS)", sorted(df_completo['CÉLULA'].unique().tolist()))
+    # Mostra as UPS exatamente como estão na planilha
+    lista_ups = sorted(df_base_total['CELULA'].unique().tolist())
+    ups_selecionada = st.sidebar.selectbox("Escolha a Célula", lista_ups)
+    
     h_inicio = st.sidebar.text_input("Hora de Início", value="07:12")
     
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Cálculo de Eficiência")
-    n_natural = st.sidebar.number_input("N Natural (Padrão)", value=3, min_value=1, step=1)
-    n_dia = st.sidebar.number_input("N do Dia (Real)", value=3, min_value=1, step=1)
+    st.sidebar.subheader("Eficiência")
+    n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
+    n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
+    fator = n_dia / n_nat
+    st.sidebar.info(f"Fator: {fator:.2%}")
+
+    # Filtra modelos da UPS selecionada
+    df_ups = df_base_total[df_base_total['CELULA'] == ups_selecionada]
+    opcoes_modelos = df_ups['MODELO'].tolist()
+
+    st.header(f"📋 Programação: {ups_selecionada}")
     
-    fator_calculado = n_dia / n_natural
-    st.sidebar.info(f"Fator Aplicado: {fator_calculado:.2%}")
+    if not opcoes_modelos:
+        st.error("Nenhum modelo encontrado para esta célula na planilha.")
+    else:
+        df_editor = st.data_editor(
+            pd.DataFrame([{"MODELO": opcoes_modelos[0], "Qtd": 0}]),
+            num_rows="dynamic", use_container_width=True,
+            column_config={
+                "MODELO": st.column_config.SelectboxColumn("Modelo", options=opcoes_modelos, required=True),
+                "Qtd": st.column_config.NumberColumn("Quantidade", min_value=0)
+            }
+        )
 
-    df_filtrado = df_completo[df_completo['CÉLULA'] == ups_selecionada]
-    lista_modelos = sorted(df_filtrado['MODELO'].unique().tolist())
-
-    st.header(f"📋 Planejamento: {ups_selecionada}")
-    
-    # Criamos o DataFrame inicial com o primeiro modelo da lista (evita o nan)
-    modelo_padrao = lista_modelos[0] if lista_modelos else ""
-    df_usuario = st.data_editor(
-        pd.DataFrame([{"Modelo": modelo_padrao, "Qtd": 0}]),
-        num_rows="dynamic", use_container_width=True,
-        column_config={
-            "Modelo": st.column_config.SelectboxColumn("Modelo", options=lista_modelos, required=True),
-            "Qtd": st.column_config.NumberColumn("Qtd", min_value=0)
-        }
-    )
-
-    if st.button("🚀 Calcular Planejamento"):
-        if df_usuario["Qtd"].sum() == 0:
-            st.warning("Adicione modelos e quantidades para ver o resultado.")
-        else:
-            res = run_calculation(df_usuario, df_filtrado, h_inicio, fator_calculado)
+        if st.button("🚀 Calcular Planejamento"):
+            res = run_calculation(df_editor, df_ups, h_inicio, fator)
             
             st.divider()
             c1, c2, c3 = st.columns(3)
             c1.metric("Peças Totais", f"{int(res['total'])} pçs")
-            c2.metric("Eficiência Real", f"{fator_calculado:.2%}")
+            c2.metric("Fator Real", f"{fator:.2%}")
             c3.metric("Ginástica", "SIM" if res['ginastica'] else "NÃO")
 
-            df_grafico = res['df'].copy()
-            fig = px.bar(df_grafico, x='Horário', y='Peças', text='Peças',
-                         title="Produção Estimada por Faixa Horária",
-                         color_discrete_sequence=['#007BFF'])
-            fig.update_layout(yaxis=dict(range=[0, df_grafico['Peças'].max() * 1.5 if df_grafico['Peças'].max() > 0 else 10]))
+            fig = px.bar(res['df'], x='Horário', y='Peças', text='Peças', title="Produção por Horário")
             st.plotly_chart(fig, use_container_width=True)
-            
-            st.subheader("🗓️ Cronograma Detalhado")
             st.table(res['df'])
 
 except Exception as e:
-    st.error(f"Erro: {e}")
+    st.error(f"Erro ao carregar dados: {e}")
