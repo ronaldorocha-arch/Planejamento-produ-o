@@ -15,9 +15,12 @@ def carregar_base():
     df.columns.values[1] = 'UNIDADE HORA'
     df.columns.values[-1] = 'UPS_BRUTA'
     df['CÉLULA'] = df['UPS_BRUTA'].fillna(method='ffill')
+    # Remove linhas onde o modelo é nulo ou vazio
+    df = df.dropna(subset=['MODELO'])
     df['MODELO'] = df['MODELO'].astype(str).str.strip()
+    df = df[df['MODELO'] != 'nan']
     df['UNIDADE HORA'] = pd.to_numeric(df['UNIDADE HORA'], errors='coerce')
-    return df[['MODELO', 'UNIDADE HORA', 'CÉLULA']].dropna(subset=['MODELO'])
+    return df[['MODELO', 'UNIDADE HORA', 'CÉLULA']]
 
 def gerar_grade_flexivel(hora_inicio_str):
     formato = "%H:%M"
@@ -51,7 +54,7 @@ def run_calculation(df_input, df_base, hora_inicio, fator):
     models_df = df_input.merge(df_base, on='MODELO', how='left')
     models_df['CADENCIA_REAL'] = models_df['UNIDADE HORA'] * fator
     models_df['Tempo por peça'] = 60 / models_df['CADENCIA_REAL']
-    models_df['QTD_RESTANTE'] = pd.to_numeric(models_df['QUANTIDADE'], errors='coerce').fillna(0)
+    models_df['QTD_RESTANTE'] = pd.to_numeric(models_df['Qtd'], errors='coerce').fillna(0)
     
     results, tempo_acumulado, current_idx, total_produced = [], 0.0, 0, 0
     for _, slot in time_slots_df.iterrows():
@@ -87,8 +90,6 @@ try:
     
     st.sidebar.markdown("---")
     st.sidebar.subheader("Cálculo de Eficiência")
-    
-    # AJUSTES SOLICITADOS: Números inteiros (sem .0) e começando com 3
     n_natural = st.sidebar.number_input("N Natural (Padrão)", value=3, min_value=1, step=1)
     n_dia = st.sidebar.number_input("N do Dia (Real)", value=3, min_value=1, step=1)
     
@@ -100,34 +101,38 @@ try:
 
     st.header(f"📋 Planejamento: {ups_selecionada}")
     
+    # Criamos o DataFrame inicial com o primeiro modelo da lista (evita o nan)
+    modelo_padrao = lista_modelos[0] if lista_modelos else ""
     df_usuario = st.data_editor(
-        pd.DataFrame([{"MODELO": lista_modelos[0], "QUANTIDADE": 0}]),
+        pd.DataFrame([{"Modelo": modelo_padrao, "Qtd": 0}]),
         num_rows="dynamic", use_container_width=True,
         column_config={
-            "MODELO": st.column_config.SelectboxColumn("Modelo", options=lista_modelos, required=True),
-            "QUANTIDADE": st.column_config.NumberColumn("Qtd", min_value=0)
+            "Modelo": st.column_config.SelectboxColumn("Modelo", options=lista_modelos, required=True),
+            "Qtd": st.column_config.NumberColumn("Qtd", min_value=0)
         }
     )
 
     if st.button("🚀 Calcular Planejamento"):
-        res = run_calculation(df_usuario, df_filtrado, h_inicio, fator_calculado)
-        
-        st.divider()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Peças Totais", f"{int(res['total'])} pçs")
-        c2.metric("Eficiência Real", f"{fator_calculado:.2%}")
-        c3.metric("Ginástica", "SIM" if res['ginastica'] else "NÃO")
+        if df_usuario["Qtd"].sum() == 0:
+            st.warning("Adicione modelos e quantidades para ver o resultado.")
+        else:
+            res = run_calculation(df_usuario, df_filtrado, h_inicio, fator_calculado)
+            
+            st.divider()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Peças Totais", f"{int(res['total'])} pçs")
+            c2.metric("Eficiência Real", f"{fator_calculado:.2%}")
+            c3.metric("Ginástica", "SIM" if res['ginastica'] else "NÃO")
 
-        # Gráfico
-        df_grafico = res['df'].copy()
-        fig = px.bar(df_grafico, x='Horário', y='Peças', text='Peças',
-                     title="Produção Estimada por Faixa Horária",
-                     color_discrete_sequence=['#007BFF'])
-        fig.update_layout(yaxis=dict(range=[0, df_grafico['Peças'].max() * 1.5 if df_grafico['Peças'].max() > 0 else 10]))
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.subheader("🗓️ Cronograma Detalhado")
-        st.table(res['df'])
+            df_grafico = res['df'].copy()
+            fig = px.bar(df_grafico, x='Horário', y='Peças', text='Peças',
+                         title="Produção Estimada por Faixa Horária",
+                         color_discrete_sequence=['#007BFF'])
+            fig.update_layout(yaxis=dict(range=[0, df_grafico['Peças'].max() * 1.5 if df_grafico['Peças'].max() > 0 else 10]))
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.subheader("🗓️ Cronograma Detalhado")
+            st.table(res['df'])
 
 except Exception as e:
     st.error(f"Erro: {e}")
