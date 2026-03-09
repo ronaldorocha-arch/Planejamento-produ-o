@@ -3,7 +3,7 @@ import pandas as pd
 import math
 from datetime import datetime, timedelta
 
-# Configuração da página (deve ser a primeira coisa no Streamlit)
+# Configuração da página (DEVE SER A PRIMEIRA LINHA DE CÓDIGO)
 st.set_page_config(page_title="Planejador de Produção", page_icon="🏭", layout="wide")
 
 GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
@@ -12,7 +12,6 @@ def gerar_grade_flexivel(hora_inicio_str):
     formato = "%H:%M"
     dia_semana = datetime.now().weekday()
     tem_ginastica_hoje = dia_semana in [0, 2] # Segunda (0) e Quarta (2)
-
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
     minutos_padrao = [50, 60, 60, 0, 60, 60, 50, 60, 60]
 
@@ -28,13 +27,10 @@ def gerar_grade_flexivel(hora_inicio_str):
         marco_dt = datetime.strptime(m_str, formato)
         if marco_dt > tempo_atual:
             duracao = (marco_dt - tempo_atual).seconds // 60
-
             if (tempo_atual <= datetime.strptime("09:00", formato) < marco_dt) or \
                (tempo_atual <= datetime.strptime("15:00", formato) < marco_dt):
                 duracao -= 10
-
             grade.append({'Horário': f"{tempo_atual.strftime(formato)}–{m_str}", 'Minutos úteis': max(0, duracao)})
-
             for j in range(i, len(marcos) - 1):
                 intervalo = f"{marcos[j]}–{marcos[j+1]}"
                 mins = minutos_padrao[j]
@@ -42,12 +38,10 @@ def gerar_grade_flexivel(hora_inicio_str):
                     mins -= 10
                 grade.append({'Horário': intervalo, 'Minutos úteis': mins})
             break
-
     return pd.DataFrame(grade), tem_ginastica_hoje
 
 def run_production_planning(df_input, hora_inicio):
     time_slots_df, houve_ginastica = gerar_grade_flexivel(hora_inicio)
-
     try:
         n_nat = pd.to_numeric(str(df_input.iloc[0, 3]).replace(',', '.'), errors='coerce')
         n_dia = pd.to_numeric(str(df_input.iloc[0, 4]).replace(',', '.'), errors='coerce')
@@ -104,33 +98,29 @@ def run_production_planning(df_input, hora_inicio):
 
     return {'results_df': results_df, 'total': total_produced, 'finish_time': finish_time_str, 'fator': fator, 'ginastica': houve_ginastica}
 
-# --- INTERFACE ---
-st.title("🏭 Planejador de Produção Flexível")
+# --- INTERFACE STREAMLIT ---
+st.title("🏭 Planejador de Produção")
 
-# Sidebar para inputs
 st.sidebar.header("Parâmetros")
-h_entrada = st.sidebar.text_input("Horário de Início (ex: 07:12)", value="07:12")
+h_entrada = st.sidebar.text_input("Horário de Início (HH:MM)", value="07:12")
 
-if st.sidebar.button("🔄 Atualizar Dados da Planilha"):
+if st.sidebar.button("🔄 Atualizar Dados"):
     st.cache_data.clear()
 
 try:
-    # Lendo do Google Sheets
     df_raw = pd.read_csv(GOOGLE_SHEET_URL)
     res = run_production_planning(df_raw, h_entrada)
 
-    # Métricas de destaque
     c1, c2, c3 = st.columns(3)
-    c1.metric("Eficiência da Linha", f"{res['fator']:.2%}")
-    c2.metric("Ginástica Laboral", "SIM" if res['ginastica'] else "NÃO")
-    c3.metric("Previsão de Término", res['finish_time'])
+    c1.metric("Eficiência Real", f"{res['fator']:.2%}")
+    c2.metric("Ginástica Hoje?", "SIM" if res['ginastica'] else "NÃO")
+    c3.metric("Término Estimado", res['finish_time'])
 
-    st.markdown("---")
+    st.divider()
 
-    # Tabela principal
-    st.subheader("Cronograma de Produção")
-    exibir_df = res['results_df'][['Horário', 'Peças no Horário', 'Produção Acumulada', 'Modelos produzidos']]
-    st.dataframe(exibir_df, use_container_width=True, hide_index=True)
+    st.subheader("Grade de Horários")
+    df_web = res['results_df'][['Horário', 'Peças no Horário', 'Produção Acumulada', 'Modelos produzidos']]
+    st.dataframe(df_web, use_container_width=True, hide_index=True)
 
 except Exception as e:
-    st.error(f"Erro ao processar dados: {e}")
+    st.error(f"Erro ao carregar dados: {e}")
