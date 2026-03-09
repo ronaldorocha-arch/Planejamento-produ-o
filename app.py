@@ -88,17 +88,25 @@ try:
         fator = n_dia / n_nat
 
         df_f = base[base['CELULA'] == sel_ups]
-        st.header(f"📋 Programação: {sel_ups}")
         
-        # TABELA COM BOTÃO DE DELETAR ATIVADO
+        col_t1, col_t2 = st.columns([0.8, 0.2])
+        with col_t1:
+            st.header(f"📋 Programação: {sel_ups}")
+        with col_t2:
+            if st.button("🗑️ Limpar Tudo"):
+                st.cache_data.clear()
+                st.rerun()
+
+        # Editor de dados com suporte explícito a deleção
         df_editor = st.data_editor(
             pd.DataFrame(columns=["Equipamento", "Qtd"]),
-            num_rows="dynamic",
+            num_rows="dynamic", # Isso habilita o botão (+) e a lixeira
             use_container_width=True,
             column_config={
                 "Equipamento": st.column_config.SelectboxColumn("Equipamento (Modelo | Cadência)", options=df_f['DISPLAY'].tolist(), required=True),
                 "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)
-            }
+            },
+            key="planejador_editor"
         )
 
         if st.button("🚀 Gerar Planejamento"):
@@ -110,5 +118,8 @@ try:
                 c2.metric("Eficiência", f"{fator:.2%}")
                 c3.metric("Ginástica", "SIM" if r['gin'] else "NÃO")
                 st.table(r['df'])
+            else:
+                st.warning("Adicione pelo menos um equipamento clicando no (+) abaixo da tabela.")
+
 except Exception as e:
     st.error(f"Erro: {e}")
