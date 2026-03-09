@@ -10,23 +10,50 @@ URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB
 
 @st.cache_data(ttl=60)
 def carregar_base():
-    # Lê a planilha bruta
-    df = pd.read_csv(URL_BASE)
+    # Lê a planilha sem cabeçalho primeiro para encontrar os dados reais
+    df_raw = pd.read_csv(URL_BASE, header=None)
     
-    # Identifica as colunas pela POSIÇÃO para evitar erro de nome
-    # Coluna 0 = MODELO | Coluna 1 = UNIDADE HORA | Última Coluna = UPS
-    new_df = pd.DataFrame()
-    new_df['MODELO'] = df.iloc[:, 0].astype(str).str.strip()
-    new_df['UNIDADE_HORA'] = pd.to_numeric(df.iloc[:, 1], errors='coerce')
+    # Procura a linha onde começa o cabeçalho real (que contém MODELO ou UNIDADE)
+    start_row = 0
+    for i, row in df_raw.iterrows():
+        row_str = " ".join(row.astype(str)).upper()
+        if "MODELO" in row_str or "UNIDADE" in row_str:
+            start_row = i
+            break
+            
+    # Relê a planilha a partir da linha correta
+    df = pd.read_csv(URL_BASE, skiprows=start_row)
+    df.columns = [str(c).strip().upper() for c in df.columns]
     
-    # Pega a última coluna para a UPS e preenche as células mescladas
-    ups_col = df.iloc[:, -1].fillna(method='ffill').astype(str).str.strip()
-    new_df['CELULA'] = ups_col
+    # Tenta identificar as colunas por nome ou posição
+    col_modelo = df.columns[0]
+    col_unidade = df.columns[1]
     
-    # Remove linhas onde o modelo está vazio, é "nan" ou é título
-    new_df = new_df[~new_df['MODELO'].isin(['nan', 'MODELO', 'None', ''])]
-    return new_df.dropna(subset=['UNIDADE_HORA'])
+    # A coluna da UPS: vamos procurar a coluna que tem "UPS" ou "ACES" nos valores
+    col_celula = None
+    for col in df.columns:
+        if df[col].astype(str).str.contains('UPS|ACES', case=False, na=False).any():
+            col_celula = col
+            break
+    
+    if not col_celula: # Se não achou pelo nome, pega a última coluna
+        col_celula = df.columns[-1]
 
+    # Criamos o DataFrame limpo
+    new_df = pd.DataFrame()
+    new_df['MODELO'] = df[col_modelo].astype(str).str.strip()
+    new_df['UNIDADE_HORA'] = pd.to_numeric(df[col_unidade], errors='coerce')
+    
+    # Preenchimento das células mescladas (ffill)
+    new_df['CELULA'] = df[col_celula].fillna(method='ffill').astype(str).str.strip()
+    
+    # Limpeza final: remove lixo
+    new_df = new_df[~new_df['MODELO'].isin(['nan', 'MODELO', 'None', '', 'MODELO /'])]
+    new_df = new_df.dropna(subset=['UNIDADE_HORA'])
+    
+    return new_df
+
+# --- LÓGICA DE CÁLCULO MANTIDA ---
 def gerar_grade_flexivel(hora_inicio_str):
     formato = "%H:%M"
     dia_semana = datetime.now().weekday()
@@ -56,7 +83,6 @@ def gerar_grade_flexivel(hora_inicio_str):
 
 def run_calculation(df_input, df_base, hora_inicio, fator):
     time_slots_df, houve_ginastica = gerar_grade_flexivel(hora_inicio)
-    # Procv manual
     models_df = df_input.merge(df_base, on='MODELO', how='left')
     models_df['CADENCIA_REAL'] = models_df['UNIDADE_HORA'] * fator
     models_df['Tempo_peca'] = 60 / models_df['CADENCIA_REAL']
@@ -91,28 +117,26 @@ try:
     df_base_total = carregar_base()
     
     st.sidebar.title("⚙️ Painel de Controle")
-    # Mostra as UPS exatamente como estão na planilha
-    lista_ups = sorted(df_base_total['CELULA'].unique().tolist())
-    ups_selecionada = st.sidebar.selectbox("Escolha a Célula", lista_ups)
+    lista_ups = sorted([x for x in df_base_total['CELULA'].unique() if x not in ['nan', 'None']])
     
-    h_inicio = st.sidebar.text_input("Hora de Início", value="07:12")
-    
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("Eficiência")
-    n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
-    n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
-    fator = n_dia / n_nat
-    st.sidebar.info(f"Fator: {fator:.2%}")
-
-    # Filtra modelos da UPS selecionada
-    df_ups = df_base_total[df_base_total['CELULA'] == ups_selecionada]
-    opcoes_modelos = df_ups['MODELO'].tolist()
-
-    st.header(f"📋 Programação: {ups_selecionada}")
-    
-    if not opcoes_modelos:
-        st.error("Nenhum modelo encontrado para esta célula na planilha.")
+    if not lista_ups:
+        st.error("⚠️ Não encontramos as UPS na planilha. Verifique se os nomes 'UPS' ou 'ACES' estão na coluna correta.")
     else:
+        ups_selecionada = st.sidebar.selectbox("Escolha a Célula", lista_ups)
+        h_inicio = st.sidebar.text_input("Hora de Início", value="07:12")
+        
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Eficiência")
+        n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
+        n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
+        fator = n_dia / n_nat
+        st.sidebar.info(f"Fator: {fator:.2%}")
+
+        df_ups = df_base_total[df_base_total['CELULA'] == ups_selecionada]
+        opcoes_modelos = df_ups['MODELO'].unique().tolist()
+
+        st.header(f"📋 Programação: {ups_selecionada}")
+        
         df_editor = st.data_editor(
             pd.DataFrame([{"MODELO": opcoes_modelos[0], "Qtd": 0}]),
             num_rows="dynamic", use_container_width=True,
@@ -136,4 +160,4 @@ try:
             st.table(res['df'])
 
 except Exception as e:
-    st.error(f"Erro ao carregar dados: {e}")
+    st.error(f"Ocorreu um problema: {e}")
