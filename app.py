@@ -87,9 +87,10 @@ try:
     
     st.sidebar.markdown("---")
     st.sidebar.subheader("Cálculo de Eficiência")
-    # AJUSTE AQUI: step=1 para andar de 1 em 1
-    n_natural = st.sidebar.number_input("N Natural (Padrão)", value=10.0, min_value=1.0, step=1.0)
-    n_dia = st.sidebar.number_input("N do Dia (Real)", value=10.0, min_value=1.0, step=1.0)
+    
+    # AJUSTES SOLICITADOS: Números inteiros (sem .0) e começando com 3
+    n_natural = st.sidebar.number_input("N Natural (Padrão)", value=3, min_value=1, step=1)
+    n_dia = st.sidebar.number_input("N do Dia (Real)", value=3, min_value=1, step=1)
     
     fator_calculado = n_dia / n_natural
     st.sidebar.info(f"Fator Aplicado: {fator_calculado:.2%}")
@@ -122,7 +123,7 @@ try:
         fig = px.bar(df_grafico, x='Horário', y='Peças', text='Peças',
                      title="Produção Estimada por Faixa Horária",
                      color_discrete_sequence=['#007BFF'])
-        fig.update_layout(yaxis=dict(range=[0, df_grafico['Peças'].max() * 1.5]))
+        fig.update_layout(yaxis=dict(range=[0, df_grafico['Peças'].max() * 1.5 if df_grafico['Peças'].max() > 0 else 10]))
         st.plotly_chart(fig, use_container_width=True)
         
         st.subheader("🗓️ Cronograma Detalhado")
