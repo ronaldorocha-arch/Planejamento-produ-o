@@ -16,12 +16,12 @@ PADROES_N = {
 @st.cache_data(ttl=5)
 def carregar_base():
     try:
-        # Lê a planilha bruta - 2000 linhas para garantir o final da lista
+        # Lê a planilha bruta - 2500 linhas para garantir o final da lista
         df_raw = pd.read_csv(URL_BASE, header=None).astype(str)
         
         # Localiza o cabeçalho real na Coluna G (índice 6)
         m_row = -1
-        for r in range(min(200, len(df_raw))):
+        for r in range(min(300, len(df_raw))):
             val = str(df_raw.iloc[r, 6]).strip().upper()
             if val == "MODELO":
                 m_row = r
@@ -30,33 +30,38 @@ def carregar_base():
         if m_row == -1: return pd.DataFrame()
 
         # Extrai os dados brutos da tabela amarela
-        dados = df_raw.iloc[m_row+1:m_row+2000].copy()
+        dados = df_raw.iloc[m_row+1:m_row+2500].copy()
         
         lista_final = []
-        ultima_ups = None
+        celula_atual = "Indefinida"
 
-        # Percorre linha por linha para garantir que NADA seja ignorado
+        # Percorre linha por linha com lógica de memória de Célula
         for i in range(len(dados)):
             modelo = str(dados.iloc[i, 6]).strip()
             unidade = pd.to_numeric(dados.iloc[i, 7], errors='coerce')
             descricao = str(dados.iloc[i, 8]).strip()
-            celula_atual = str(dados.iloc[i, 9]).strip()
+            # Coluna J (índice 9) tem a Célula
+            cel_na_linha = str(dados.iloc[i, 9]).strip().upper()
 
-            # Se encontrou um nome de UPS/ACS, atualiza a "âncora"
-            if "UPS" in cel_atual.upper() or "ACS" in cel_atual.upper():
-                ultima_ups = cel_atual
+            # Se a linha contém um nome de setor (UPS ou ACS), atualiza a âncora
+            if "UPS" in cel_na_linha or "ACS" in cel_na_linha:
+                celula_atual = str(dados.iloc[i, 9]).strip()
             
-            # Só adiciona se tiver um modelo válido e uma cadência (unidade)
+            # Só adiciona se tiver um modelo válido e uma cadência numérica
             if modelo != 'nan' and len(modelo) > 3 and not pd.isna(unidade):
                 lista_final.append({
                     'ID': modelo,
                     'UNIDADE_HORA': unidade,
                     'DESCRICAO': descricao,
-                    'CELULA': ultima_ups if ultima_ups else "Indefinida",
+                    'CELULA': celula_atual,
                     'DISPLAY': f"{modelo} - {descricao} ({unidade} pç/h)"
                 })
 
         df_f = pd.DataFrame(lista_final)
+        
+        # Filtro final para garantir que não apareçam células "Indefinidas"
+        df_f = df_f[df_f['CELULA'] != "Indefinida"]
+        
         return df_f
     except Exception as e:
         st.error(f"Erro na leitura: {e}")
@@ -124,21 +129,24 @@ try:
     if not base.empty:
         st.sidebar.title("⚙️ Controle")
         
+        # Dropdown da esquerda com as Células encontradas
         lista_ups = sorted(base['CELULA'].unique().tolist())
-        sel_ups = st.sidebar.selectbox("Selecionar Célula (UPS / ACS)", lista_ups)
+        sel_ups = st.sidebar.selectbox("Selecionar Célula", lista_ups)
         
+        # Padrão de N baseado na UPS
         v_padrao = 3
         for key in PADROES_N:
             if key in sel_ups:
                 v_padrao = PADROES_N[key]
                 break
 
-        h_ini = st.sidebar.text_input("Início", value="08:00")
-        tem_gin = st.sidebar.checkbox("Ginástica Laboral?", value=False)
+        h_ini = st.sidebar.text_input("Início da Produção", value="08:00")
+        tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=v_padrao, min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=v_padrao, min_value=1)
         fator = n_dia / n_nat
 
+        # Dropdown da direita com modelos da Célula escolhida
         df_f = base[base['CELULA'] == sel_ups]
         opcoes = sorted(df_f['DISPLAY'].tolist())
 
@@ -170,7 +178,7 @@ try:
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
                 st.table(r['df'])
             else:
-                st.warning("Adicione os modelos na tabela.")
+                st.warning("Adicione os modelos na lista.")
     else:
         st.error("⚠️ Estrutura não detectada. Verifique se o título 'MODELO' está na coluna G.")
 
