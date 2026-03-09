@@ -7,53 +7,53 @@ st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
-# Padrões de N Natural por Célula
+# Padrões de N Natural atualizados conforme sua lista
 PADROES_N = {
     "UPS - 1": 5, "UPS - 2": 3, "UPS - 3": 3, "UPS - 4": 3,
-    "UPS - 6": 4, "UPS - 7": 4, "UPS - 8": 4, "ACS": 2
+    "UPS - 6": 4, "UPS - 7": 4, "UPS - 8": 4, "ACS - 01": 2
 }
 
 @st.cache_data(ttl=5)
 def carregar_base():
     try:
-        # Lê a planilha bruta (leitura de até 500 linhas para não perder nada)
+        # Lê a planilha bruta - aumentamos para 1000 linhas para pegar os acessórios no fim
         df_raw = pd.read_csv(URL_BASE, header=None).astype(str)
         
-        m_row, m_col = -1, -1
-        # Busca o cabeçalho "MODELO" na coluna 6 (G)
-        for r in range(min(50, len(df_raw))): 
+        # Localiza o cabeçalho real na Coluna G (índice 6)
+        m_row = -1
+        for r in range(len(df_raw)):
             val = df_raw.iloc[r, 6].strip().upper()
-            if val == "MODELO": 
-                m_row, m_col = r, 6
+            if val == "MODELO":
+                m_row = r
                 break
         
         if m_row == -1: return pd.DataFrame()
 
-        # Pega os dados a partir da linha do cabeçalho
-        dados = df_raw.iloc[m_row+1:m_row+500].copy()
+        # Extrai os dados ignorando lixo
+        dados = df_raw.iloc[m_row+1:].copy()
+        
         df_f = pd.DataFrame()
+        df_f['ID'] = dados.iloc[:, 6].str.strip() # Coluna G: MODELO
+        df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, 7], errors='coerce') # Coluna H: UNIDADE
+        df_f['DESCRICAO'] = dados.iloc[:, 8].str.strip() # Coluna I: DESCRIÇÃO
         
-        # Mapeamento exato das colunas da sua planilha amarela
-        df_f['ID'] = dados.iloc[:, 6].str.strip() # Coluna G
-        df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, 7], errors='coerce') # Coluna H
-        df_f['DESCRICAO'] = dados.iloc[:, 8].str.strip() # Coluna I
+        # Coluna J (índice 9): CÉLULA (UPS / ACS)
+        # Tratamento especial para não perder os acessórios no final da planilha
+        cel_col = dados.iloc[:, 9].replace(['nan', 'None', '', ' ', 'null'], None)
+        df_f['CELULA'] = cel_col.ffill().str.strip()
         
-        # Coluna J (índice 9) contém as Células (UPS/ACS)
-        cel_raw = dados.iloc[:, 9].replace(['nan', 'None', '', ' ', 'null'], None)
-        df_f['CELULA'] = cel_raw.ffill().str.strip()
-        
-        # --- FILTROS DE LIMPEZA ---
-        # 1. Remove linhas onde o modelo é "nan" ou o título se repete
+        # LIMPEZA CRÍTICA:
+        # 1. Remove linhas onde o modelo é vazio ou igual ao título
         df_f = df_f[df_f['ID'] != 'nan']
         df_f = df_f[df_f['ID'] != 'MODELO']
         
-        # 2. Garante que só fiquem células que contenham UPS ou ACS
+        # 2. Mantém apenas o que for UPS ou ACS (Ajustado para pegar ACS - 01 no final)
         df_f = df_f[df_f['CELULA'].str.contains('UPS|ACS', case=False, na=False)]
         
-        # 3. Cria o nome de exibição
+        # 3. Cria o nome de exibição para o seletor
         df_f['DISPLAY'] = df_f['ID'] + " - " + df_f['DESCRICAO'] + " (" + df_f['UNIDADE_HORA'].astype(str) + " pç/h)"
         
-        return df_f.dropna(subset=['UNIDADE_HORA', 'CELULA'])
+        return df_f.dropna(subset=['UNIDADE_HORA'])
     except Exception as e:
         st.error(f"Erro na leitura: {e}")
         return pd.DataFrame()
@@ -119,22 +119,25 @@ try:
     base = carregar_base()
     if not base.empty:
         st.sidebar.title("⚙️ Controle")
+        
+        # Filtro de UPS / ACS
         lista_ups = sorted(base['CELULA'].unique().tolist())
         sel_ups = st.sidebar.selectbox("Selecionar Célula", lista_ups)
         
-        # Busca o padrão de N ou usa 3 se não achar
+        # Ajuste dinâmico do N Natural
         v_padrao = 3
-        for k, v in PADROES_N.items():
-            if k in sel_ups:
-                v_padrao = v
+        for key in PADROES_N:
+            if key in sel_ups:
+                v_padrao = PADROES_N[key]
                 break
-                
+
         h_ini = st.sidebar.text_input("Início", value="08:00")
         tem_gin = st.sidebar.checkbox("Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=v_padrao, min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=v_padrao, min_value=1)
         fator = n_dia / n_nat
 
+        # Filtra equipamentos da célula selecionada
         df_f = base[base['CELULA'] == sel_ups]
         opcoes = sorted(df_f['DISPLAY'].tolist())
 
@@ -145,6 +148,7 @@ try:
                 st.session_state["reset_key"] = st.session_state.get("reset_key", 0) + 1
                 st.rerun()
 
+        # Tabela de entrada
         key_ed = f"ed_{sel_ups}_{st.session_state.get('reset_key', 0)}"
         df_editor = st.data_editor(
             pd.DataFrame(columns=["Equipamento", "Qtd"]),
@@ -166,9 +170,9 @@ try:
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
                 st.table(r['df'])
             else:
-                st.warning("Selecione os equipamentos da lista acima.")
+                st.warning("Adicione os modelos desejados.")
     else:
-        st.error("⚠️ Estrutura não detectada. Verifique a planilha.")
+        st.error("⚠️ Estrutura não detectada. Verifique a Coluna G da sua planilha.")
 
 except Exception as e:
     st.error(f"Erro Crítico: {e}")
