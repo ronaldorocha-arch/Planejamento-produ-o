@@ -16,50 +16,53 @@ PADROES_N = {
 @st.cache_data(ttl=5)
 def carregar_base():
     try:
-        # Lê a planilha bruta - Aumentado para 2000 para garantir que pegue tudo
+        # Lê a planilha bruta - 2000 linhas para garantir o final da lista
         df_raw = pd.read_csv(URL_BASE, header=None).astype(str)
         
         # Localiza o cabeçalho real na Coluna G (índice 6)
         m_row = -1
-        for r in range(min(150, len(df_raw))):
-            val = df_raw.iloc[r, 6].strip().upper()
+        for r in range(min(200, len(df_raw))):
+            val = str(df_raw.iloc[r, 6]).strip().upper()
             if val == "MODELO":
                 m_row = r
                 break
         
         if m_row == -1: return pd.DataFrame()
 
-        # Extrai os dados a partir da linha do cabeçalho
+        # Extrai os dados brutos da tabela amarela
         dados = df_raw.iloc[m_row+1:m_row+2000].copy()
         
-        df_f = pd.DataFrame()
-        df_f['ID'] = dados.iloc[:, 6].str.strip() # Coluna G: MODELO
-        df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, 7], errors='coerce') # Coluna H: UNIDADE
-        df_f['DESCRICAO'] = dados.iloc[:, 8].str.strip() # Coluna I: DESCRIÇÃO
-        
-        # Coluna J (índice 9): CÉLULA (UPS / ACS)
-        # LIMPEZA PESADA: remove espaços invisíveis antes de preencher para baixo
-        cel_col = dados.iloc[:, 9].str.strip().replace(['nan', 'None', '', 'null', 'NONE'], None)
-        df_f['CELULA'] = cel_col.ffill().str.strip()
-        
-        # --- FILTROS DE SEGURANÇA ---
-        # 1. Remove linhas onde o modelo é vazio ou o próprio título
-        df_f = df_f[df_f['ID'] != 'nan']
-        df_f = df_f[df_f['ID'] != 'MODELO']
-        df_f = df_f[df_f['ID'].str.len() > 3]
-        
-        # 2. Mantém apenas o que for UPS ou ACS (Isso garante que o ACS - 01 apareça)
-        df_f = df_f[df_f['CELULA'].str.contains('UPS|ACS', case=False, na=False)]
-        
-        # 3. Nome de exibição
-        df_f['DISPLAY'] = df_f['ID'] + " - " + df_f['DESCRICAO'] + " (" + df_f['UNIDADE_HORA'].astype(str) + " pç/h)"
-        
-        return df_f.dropna(subset=['UNIDADE_HORA', 'CELULA'])
+        lista_final = []
+        ultima_ups = None
+
+        # Percorre linha por linha para garantir que NADA seja ignorado
+        for i in range(len(dados)):
+            modelo = str(dados.iloc[i, 6]).strip()
+            unidade = pd.to_numeric(dados.iloc[i, 7], errors='coerce')
+            descricao = str(dados.iloc[i, 8]).strip()
+            celula_atual = str(dados.iloc[i, 9]).strip()
+
+            # Se encontrou um nome de UPS/ACS, atualiza a "âncora"
+            if "UPS" in cel_atual.upper() or "ACS" in cel_atual.upper():
+                ultima_ups = cel_atual
+            
+            # Só adiciona se tiver um modelo válido e uma cadência (unidade)
+            if modelo != 'nan' and len(modelo) > 3 and not pd.isna(unidade):
+                lista_final.append({
+                    'ID': modelo,
+                    'UNIDADE_HORA': unidade,
+                    'DESCRICAO': descricao,
+                    'CELULA': ultima_ups if ultima_ups else "Indefinida",
+                    'DISPLAY': f"{modelo} - {descricao} ({unidade} pç/h)"
+                })
+
+        df_f = pd.DataFrame(lista_final)
+        return df_f
     except Exception as e:
         st.error(f"Erro na leitura: {e}")
         return pd.DataFrame()
 
-# --- FUNÇÕES DE CÁLCULO MANTIDAS ---
+# --- FUNÇÕES DE CÁLCULO ---
 def gerar_grade(h_ini, tem_gin):
     fmt = "%H:%M"
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
@@ -121,11 +124,9 @@ try:
     if not base.empty:
         st.sidebar.title("⚙️ Controle")
         
-        # Lista de Células Únicas
         lista_ups = sorted(base['CELULA'].unique().tolist())
         sel_ups = st.sidebar.selectbox("Selecionar Célula (UPS / ACS)", lista_ups)
         
-        # Padrão de N
         v_padrao = 3
         for key in PADROES_N:
             if key in sel_ups:
@@ -138,7 +139,6 @@ try:
         n_dia = st.sidebar.number_input("N do Dia", value=v_padrao, min_value=1)
         fator = n_dia / n_nat
 
-        # Filtra equipamentos da UPS selecionada
         df_f = base[base['CELULA'] == sel_ups]
         opcoes = sorted(df_f['DISPLAY'].tolist())
 
@@ -170,7 +170,7 @@ try:
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
                 st.table(r['df'])
             else:
-                st.warning("Adicione os modelos.")
+                st.warning("Adicione os modelos na tabela.")
     else:
         st.error("⚠️ Estrutura não detectada. Verifique se o título 'MODELO' está na coluna G.")
 
