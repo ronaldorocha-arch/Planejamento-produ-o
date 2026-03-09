@@ -87,10 +87,11 @@ try:
     
     st.sidebar.markdown("---")
     st.sidebar.subheader("Cálculo de Eficiência")
-    n_natural = st.sidebar.number_input("N Natural (Padrão)", value=1.0, min_value=0.1)
-    n_dia = st.sidebar.number_input("N do Dia (Real)", value=1.0, min_value=0.1)
+    # AJUSTE AQUI: step=1 para andar de 1 em 1
+    n_natural = st.sidebar.number_input("N Natural (Padrão)", value=10.0, min_value=1.0, step=1.0)
+    n_dia = st.sidebar.number_input("N do Dia (Real)", value=10.0, min_value=1.0, step=1.0)
+    
     fator_calculado = n_dia / n_natural
-
     st.sidebar.info(f"Fator Aplicado: {fator_calculado:.2%}")
 
     df_filtrado = df_completo[df_completo['CÉLULA'] == ups_selecionada]
@@ -116,14 +117,15 @@ try:
         c2.metric("Eficiência Real", f"{fator_calculado:.2%}")
         c3.metric("Ginástica", "SIM" if res['ginastica'] else "NÃO")
 
-        # Gráfico Corrigido
+        # Gráfico
         df_grafico = res['df'].copy()
         fig = px.bar(df_grafico, x='Horário', y='Peças', text='Peças',
                      title="Produção Estimada por Faixa Horária",
-                     color_discrete_sequence=['#007BFF']) # Azul NHS
-        fig.update_layout(yaxis=dict(range=[0, df_grafico['Peças'].max() * 1.2])) # Escala melhorada
+                     color_discrete_sequence=['#007BFF'])
+        fig.update_layout(yaxis=dict(range=[0, df_grafico['Peças'].max() * 1.5]))
         st.plotly_chart(fig, use_container_width=True)
         
+        st.subheader("🗓️ Cronograma Detalhado")
         st.table(res['df'])
 
 except Exception as e:
