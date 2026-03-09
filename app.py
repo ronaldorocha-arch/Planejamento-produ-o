@@ -10,51 +10,47 @@ URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB
 # Padrões de N Natural por Célula
 PADROES_N = {
     "UPS - 1": 5, "UPS - 2": 3, "UPS - 3": 3, "UPS - 4": 3,
-    "UPS - 6": 4, "UPS - 7": 4, "UPS - 8": 4, "ACS - 01": 2
+    "UPS - 6": 4, "UPS - 7": 4, "UPS - 8": 4, "ACS": 2
 }
 
 @st.cache_data(ttl=5)
 def carregar_base():
     try:
-        # Lê a planilha bruta
+        # Lê a planilha bruta (leitura de até 500 linhas para não perder nada)
         df_raw = pd.read_csv(URL_BASE, header=None).astype(str)
         
-        # BUSCA PRECISA: Vamos procurar o "MODELO" que tem a "UNIDADE" logo ao lado
         m_row, m_col = -1, -1
+        # Busca o cabeçalho "MODELO" na coluna 6 (G)
         for r in range(min(50, len(df_raw))): 
-            for c in range(min(15, len(df_raw.columns))):
-                val = df_raw.iloc[r, c].strip().upper()
-                # Verifica se é o cabeçalho real (coluna 6 na sua planilha)
-                if val == "MODELO" and c > 0: 
-                    m_row, m_col = r, c
-                    break
-            if m_row != -1: break
+            val = df_raw.iloc[r, 6].strip().upper()
+            if val == "MODELO": 
+                m_row, m_col = r, 6
+                break
         
         if m_row == -1: return pd.DataFrame()
 
-        dados = df_raw.iloc[m_row+1:].copy()
+        # Pega os dados a partir da linha do cabeçalho
+        dados = df_raw.iloc[m_row+1:m_row+500].copy()
         df_f = pd.DataFrame()
         
-        # Conforme o seu print:
-        # Coluna 6 = MODELO
-        # Coluna 7 = UNIDADE
-        # Coluna 8 = DESCRIÇÃO
-        # Coluna 9 = UPS
-        df_f['ID'] = dados.iloc[:, m_col].str.strip()
-        df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, m_col+1], errors='coerce')
-        df_f['DESCRICAO'] = dados.iloc[:, m_col+2].str.strip()
+        # Mapeamento exato das colunas da sua planilha amarela
+        df_f['ID'] = dados.iloc[:, 6].str.strip() # Coluna G
+        df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, 7], errors='coerce') # Coluna H
+        df_f['DESCRICAO'] = dados.iloc[:, 8].str.strip() # Coluna I
         
-        # Pega a coluna 9 para a UPS e faz o preenchimento para baixo (ffill)
-        cel_raw = dados.iloc[:, m_col+3].replace(['nan', 'None', '', 'None'], None)
+        # Coluna J (índice 9) contém as Células (UPS/ACS)
+        cel_raw = dados.iloc[:, 9].replace(['nan', 'None', '', ' ', 'null'], None)
         df_f['CELULA'] = cel_raw.ffill().str.strip()
         
-        # Limpeza: remove linhas que não são produtos reais
-        df_f = df_f[df_f['ID'].str.len() > 3]
-        df_f = df_f[~df_f['ID'].isin(['MODELO', 'nan', 'None'])]
+        # --- FILTROS DE LIMPEZA ---
+        # 1. Remove linhas onde o modelo é "nan" ou o título se repete
+        df_f = df_f[df_f['ID'] != 'nan']
+        df_f = df_f[df_f['ID'] != 'MODELO']
         
-        # Filtro de segurança para as Células
-        df_f = df_f[df_f['CELULA'].str.contains('UPS|ACS|ACS - 01', case=False, na=False)]
+        # 2. Garante que só fiquem células que contenham UPS ou ACS
+        df_f = df_f[df_f['CELULA'].str.contains('UPS|ACS', case=False, na=False)]
         
+        # 3. Cria o nome de exibição
         df_f['DISPLAY'] = df_f['ID'] + " - " + df_f['DESCRICAO'] + " (" + df_f['UNIDADE_HORA'].astype(str) + " pç/h)"
         
         return df_f.dropna(subset=['UNIDADE_HORA', 'CELULA'])
@@ -62,7 +58,7 @@ def carregar_base():
         st.error(f"Erro na leitura: {e}")
         return pd.DataFrame()
 
-# --- CÁLCULO E GRADE ---
+# --- FUNÇÕES DE CÁLCULO ---
 def gerar_grade(h_ini, tem_gin):
     fmt = "%H:%M"
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
@@ -126,7 +122,13 @@ try:
         lista_ups = sorted(base['CELULA'].unique().tolist())
         sel_ups = st.sidebar.selectbox("Selecionar Célula", lista_ups)
         
-        v_padrao = PADROES_N.get(sel_ups, 3)
+        # Busca o padrão de N ou usa 3 se não achar
+        v_padrao = 3
+        for k, v in PADROES_N.items():
+            if k in sel_ups:
+                v_padrao = v
+                break
+                
         h_ini = st.sidebar.text_input("Início", value="08:00")
         tem_gin = st.sidebar.checkbox("Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=v_padrao, min_value=1)
@@ -164,7 +166,7 @@ try:
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
                 st.table(r['df'])
             else:
-                st.warning("Adicione modelos na tabela.")
+                st.warning("Selecione os equipamentos da lista acima.")
     else:
         st.error("⚠️ Estrutura não detectada. Verifique a planilha.")
 
