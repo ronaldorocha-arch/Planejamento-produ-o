@@ -6,54 +6,29 @@ import plotly.express as px
 
 st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
+# Link da sua planilha
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
 @st.cache_data(ttl=60)
 def carregar_base():
-    # Lê a planilha sem cabeçalho primeiro para encontrar os dados reais
-    df_raw = pd.read_csv(URL_BASE, header=None)
-    
-    # Procura a linha onde começa o cabeçalho real (que contém MODELO ou UNIDADE)
-    start_row = 0
-    for i, row in df_raw.iterrows():
-        row_str = " ".join(row.astype(str)).upper()
-        if "MODELO" in row_str or "UNIDADE" in row_str:
-            start_row = i
-            break
-            
-    # Relê a planilha a partir da linha correta
-    df = pd.read_csv(URL_BASE, skiprows=start_row)
+    # Lê a planilha e remove espaços dos nomes das colunas
+    df = pd.read_csv(URL_BASE)
     df.columns = [str(c).strip().upper() for c in df.columns]
     
-    # Tenta identificar as colunas por nome ou posição
-    col_modelo = df.columns[0]
-    col_unidade = df.columns[1]
+    # Filtra apenas o que precisamos (ajuste os nomes se necessário)
+    # Aqui assumimos que as colunas se chamam MODELO, UNIDADE HORA e CELULA
+    col_mod = 'MODELO'
+    col_uni = 'UNIDADE HORA'
+    col_cel = 'CELULA'
     
-    # A coluna da UPS: vamos procurar a coluna que tem "UPS" ou "ACES" nos valores
-    col_celula = None
-    for col in df.columns:
-        if df[col].astype(str).str.contains('UPS|ACES', case=False, na=False).any():
-            col_celula = col
-            break
+    # Limpeza
+    df[col_mod] = df[col_mod].astype(str).str.strip()
+    df[col_uni] = pd.to_numeric(df[col_uni], errors='coerce')
+    df[col_cel] = df[col_cel].astype(str).str.strip().upper()
     
-    if not col_celula: # Se não achou pelo nome, pega a última coluna
-        col_celula = df.columns[-1]
+    # Remove linhas vazias
+    return df.dropna(subset=[col_mod, col_uni])
 
-    # Criamos o DataFrame limpo
-    new_df = pd.DataFrame()
-    new_df['MODELO'] = df[col_modelo].astype(str).str.strip()
-    new_df['UNIDADE_HORA'] = pd.to_numeric(df[col_unidade], errors='coerce')
-    
-    # Preenchimento das células mescladas (ffill)
-    new_df['CELULA'] = df[col_celula].fillna(method='ffill').astype(str).str.strip()
-    
-    # Limpeza final: remove lixo
-    new_df = new_df[~new_df['MODELO'].isin(['nan', 'MODELO', 'None', '', 'MODELO /'])]
-    new_df = new_df.dropna(subset=['UNIDADE_HORA'])
-    
-    return new_df
-
-# --- LÓGICA DE CÁLCULO MANTIDA ---
 def gerar_grade_flexivel(hora_inicio_str):
     formato = "%H:%M"
     dia_semana = datetime.now().weekday()
@@ -84,7 +59,7 @@ def gerar_grade_flexivel(hora_inicio_str):
 def run_calculation(df_input, df_base, hora_inicio, fator):
     time_slots_df, houve_ginastica = gerar_grade_flexivel(hora_inicio)
     models_df = df_input.merge(df_base, on='MODELO', how='left')
-    models_df['CADENCIA_REAL'] = models_df['UNIDADE_HORA'] * fator
+    models_df['CADENCIA_REAL'] = models_df['UNIDADE HORA'] * fator
     models_df['Tempo_peca'] = 60 / models_df['CADENCIA_REAL']
     models_df['QTD_RESTANTE'] = pd.to_numeric(models_df['Qtd'], errors='coerce').fillna(0)
     
@@ -117,20 +92,18 @@ try:
     df_base_total = carregar_base()
     
     st.sidebar.title("⚙️ Painel de Controle")
-    lista_ups = sorted([x for x in df_base_total['CELULA'].unique() if x not in ['nan', 'None']])
+    lista_ups = sorted([x for x in df_base_total['CELULA'].unique() if x not in ['NAN', 'NONE', '']])
     
     if not lista_ups:
-        st.error("⚠️ Não encontramos as UPS na planilha. Verifique se os nomes 'UPS' ou 'ACES' estão na coluna correta.")
+        st.warning("Aguardando preenchimento da coluna CELULA na planilha...")
     else:
         ups_selecionada = st.sidebar.selectbox("Escolha a Célula", lista_ups)
         h_inicio = st.sidebar.text_input("Hora de Início", value="07:12")
         
         st.sidebar.markdown("---")
-        st.sidebar.subheader("Eficiência")
         n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
         fator = n_dia / n_nat
-        st.sidebar.info(f"Fator: {fator:.2%}")
 
         df_ups = df_base_total[df_base_total['CELULA'] == ups_selecionada]
         opcoes_modelos = df_ups['MODELO'].unique().tolist()
@@ -142,22 +115,21 @@ try:
             num_rows="dynamic", use_container_width=True,
             column_config={
                 "MODELO": st.column_config.SelectboxColumn("Modelo", options=opcoes_modelos, required=True),
-                "Qtd": st.column_config.NumberColumn("Quantidade", min_value=0)
+                "Qtd": st.column_config.NumberColumn("Qtd", min_value=0)
             }
         )
 
         if st.button("🚀 Calcular Planejamento"):
             res = run_calculation(df_editor, df_ups, h_inicio, fator)
-            
             st.divider()
             c1, c2, c3 = st.columns(3)
             c1.metric("Peças Totais", f"{int(res['total'])} pçs")
-            c2.metric("Fator Real", f"{fator:.2%}")
+            c2.metric("Eficiência Real", f"{fator:.2%}")
             c3.metric("Ginástica", "SIM" if res['ginastica'] else "NÃO")
-
-            fig = px.bar(res['df'], x='Horário', y='Peças', text='Peças', title="Produção por Horário")
+            
+            fig = px.bar(res['df'], x='Horário', y='Peças', text='Peças', title="Volume por Horário", color_discrete_sequence=['#007BFF'])
             st.plotly_chart(fig, use_container_width=True)
             st.table(res['df'])
 
 except Exception as e:
-    st.error(f"Ocorreu um problema: {e}")
+    st.error(f"Erro: Verifique se as colunas MODELO, UNIDADE HORA e CELULA existem na planilha. (Detalhe: {e})")
