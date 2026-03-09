@@ -3,10 +3,8 @@ import pandas as pd
 import math
 from datetime import datetime, timedelta
 
-# Configuração da página
 st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
-# Link da planilha do Google
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
 @st.cache_data(ttl=30)
@@ -63,45 +61,28 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin):
     total_desejado = df_in['FALTA'].sum()
     res, acum, c_idx, tot = [], 0.0, 0, 0
     termino = "Incompleto"
-
     for _, s in slots.iterrows():
         hor, t_b, f_dt = s['Horário'], s['Minutos'], s['Fim_dt']
         if t_b == 0:
             res.append({'Horário': hor, 'Modelos': 'ALMOÇO', 'Peças': 0, 'Acumulada': tot})
             continue
-        
         acum += t_b
-        p_b = 0
-        modelos_no_bloco = []
-
+        p_b, modelos_no_bloco = 0, []
         while c_idx < len(df_in):
-            t_p = df_in.loc[c_idx, 'T_PC']
-            mod_id = df_in.loc[c_idx, 'ID']
+            t_p, mod_id = df_in.loc[c_idx, 'T_PC'], df_in.loc[c_idx, 'ID']
             if pd.isna(t_p) or t_p <= 0: c_idx += 1; continue
-            
             if acum >= (t_p - 0.01):
                 q = min(math.floor(acum / t_p + 0.01), df_in.loc[c_idx, 'FALTA'])
                 if q > 0:
-                    acum -= (q * t_p)
-                    df_in.loc[c_idx, 'FALTA'] -= q
+                    acum -= (q * t_p); df_in.loc[c_idx, 'FALTA'] -= q
                     tot += q; p_b += q
-                    # Registra qual modelo e quantas peças dele saíram neste bloco
                     modelos_no_bloco.append(f"{mod_id} ({int(q)} pçs)")
-                
                 if df_in.loc[c_idx, 'FALTA'] <= 0: c_idx += 1
                 else: break
             else: break
-        
-        res.append({
-            'Horário': hor, 
-            'Modelos': " + ".join(modelos_no_bloco) if modelos_no_bloco else "-",
-            'Peças': int(p_b), 
-            'Acumulada': int(tot)
-        })
-        
+        res.append({'Horário': hor, 'Modelos': " + ".join(modelos_no_bloco) if modelos_no_bloco else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
         if tot >= total_desejado and termino == "Incompleto" and total_desejado > 0:
             termino = (f_dt - timedelta(minutes=acum)).strftime("%H:%M")
-
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
 
 # --- Interface ---
@@ -109,26 +90,39 @@ try:
     base = carregar_base()
     if not base.empty:
         st.sidebar.title("⚙️ Controle")
-        sel_ups = st.sidebar.selectbox("Filtrar lista", ["TODAS"] + sorted(base['CELULA'].unique().tolist()))
+        
+        # Filtro de UPS Obrigatório
+        lista_ups = sorted(base['CELULA'].unique().tolist())
+        sel_ups = st.sidebar.selectbox("Selecionar Célula (UPS)", lista_ups)
+        
         h_ini = st.sidebar.text_input("Início", value="07:12")
         tem_gin = st.sidebar.checkbox("Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
         fator = n_dia / n_nat
 
+        # Filtra as opções baseada na escolha da UPS
+        df_f = base[base['CELULA'] == sel_ups]
+        opcoes_filtradas = df_f['DISPLAY'].tolist()
+
         col1, col2 = st.columns([0.8, 0.2])
-        with col1: st.header("📋 Programação de Produção")
+        with col1: st.header(f"📋 Programação: {sel_ups}")
         with col2: 
             if st.button("🗑️ Limpar"): 
                 st.cache_data.clear(); st.rerun()
 
+        # Agora o SelectboxColumn usa APENAS as opções filtradas da UPS escolhida
         df_editor = st.data_editor(
             pd.DataFrame(columns=["Equipamento", "Qtd"]),
             num_rows="dynamic", use_container_width=True,
             column_config={
-                "Equipamento": st.column_config.SelectboxColumn("Equipamento", options=base['DISPLAY'].tolist(), required=True),
+                "Equipamento": st.column_config.SelectboxColumn(
+                    "Equipamento", 
+                    options=opcoes_filtradas, # FILTRO APLICADO AQUI
+                    required=True
+                ),
                 "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)
-            }, key="editor_vfinal"
+            }, key=f"editor_{sel_ups}" # Chave dinâmica para forçar reset ao trocar UPS
         )
 
         if st.button("🚀 Gerar Planejamento"):
@@ -137,12 +131,10 @@ try:
                 st.divider()
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Total", f"{int(r['tot'])} pçs")
-                m2.metric("Término Estimado", r['termino'])
-                m3.metric("Eficiência", f"{fator:.2%}")
+                m2.metric("Término", r['termino'])
+                m3.metric("Fator", f"{fator:.2%}")
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
-                
-                # Tabela detalhada agora com a coluna "Modelos"
-                st.subheader("🗓️ Cronograma por Modelo")
+                st.subheader("🗓️ Cronograma Detalhado")
                 st.table(r['df'])
 except Exception as e:
     st.error(f"Erro: {e}")
