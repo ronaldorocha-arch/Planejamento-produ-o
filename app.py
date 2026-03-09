@@ -6,29 +6,35 @@ import plotly.express as px
 
 st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
-# Link da sua planilha
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
 @st.cache_data(ttl=60)
 def carregar_base():
-    # Lê a planilha e remove espaços dos nomes das colunas
-    df = pd.read_csv(URL_BASE)
-    df.columns = [str(c).strip().upper() for c in df.columns]
+    # Lê a planilha bruta
+    df_raw = pd.read_csv(URL_BASE)
     
-    # Filtra apenas o que precisamos (ajuste os nomes se necessário)
-    # Aqui assumimos que as colunas se chamam MODELO, UNIDADE HORA e CELULA
-    col_mod = 'MODELO'
-    col_uni = 'UNIDADE HORA'
-    col_cel = 'CELULA'
+    # 1. Localiza a coluna 'MODELO' (Geralmente é a coluna F, índice 5)
+    # Vamos procurar pelo nome para garantir
+    df_raw.columns = [str(c).strip().upper() for c in df_raw.columns]
     
-    # Limpeza
-    df[col_mod] = df[col_mod].astype(str).str.strip()
-    df[col_uni] = pd.to_numeric(df[col_uni], errors='coerce')
-    df[col_cel] = df[col_cel].astype(str).str.strip().upper()
-    
-    # Remove linhas vazias
-    return df.dropna(subset=[col_mod, col_uni])
+    # Criamos um novo DF pegando apenas a parte da Base de Dados (Colunas F, G, H, I)
+    # Na maioria das exportações de CSV, o Pandas nomeia colunas vazias como 'Unnamed'
+    # Vamos pegar as colunas pelos índices que vi na sua foto:
+    df = pd.DataFrame()
+    df['MODELO'] = df_raw.iloc[:, 5].astype(str).str.strip() # Coluna F
+    df['UNIDADE_HORA'] = pd.to_numeric(df_raw.iloc[:, 6], errors='coerce') # Coluna G
+    df['CELULA_BRUTA'] = df_raw.iloc[:, 8].astype(str).str.strip() # Coluna I (UPS)
 
+    # 2. Limpa o "lixo" e preenche as células mescladas das UPS
+    df = df[df['MODELO'] != 'nan']
+    df['CELULA'] = df['CELULA_BRUTA'].replace('nan', None).ffill()
+    
+    # 3. Remove as linhas de cabeçalho que o Pandas pode ter lido como dados
+    df = df[df['MODELO'].str.contains('MODELO') == False]
+    
+    return df.dropna(subset=['UNIDADE_HORA', 'CELULA'])
+
+# --- LÓGICA DE GRADE E CÁLCULO ---
 def gerar_grade_flexivel(hora_inicio_str):
     formato = "%H:%M"
     dia_semana = datetime.now().weekday()
@@ -59,7 +65,7 @@ def gerar_grade_flexivel(hora_inicio_str):
 def run_calculation(df_input, df_base, hora_inicio, fator):
     time_slots_df, houve_ginastica = gerar_grade_flexivel(hora_inicio)
     models_df = df_input.merge(df_base, on='MODELO', how='left')
-    models_df['CADENCIA_REAL'] = models_df['UNIDADE HORA'] * fator
+    models_df['CADENCIA_REAL'] = models_df['UNIDADE_HORA'] * fator
     models_df['Tempo_peca'] = 60 / models_df['CADENCIA_REAL']
     models_df['QTD_RESTANTE'] = pd.to_numeric(models_df['Qtd'], errors='coerce').fillna(0)
     
@@ -92,44 +98,41 @@ try:
     df_base_total = carregar_base()
     
     st.sidebar.title("⚙️ Painel de Controle")
-    lista_ups = sorted([x for x in df_base_total['CELULA'].unique() if x not in ['NAN', 'NONE', '']])
+    lista_ups = sorted(df_base_total['CELULA'].unique().tolist())
+    ups_selecionada = st.sidebar.selectbox("Escolha a Célula", lista_ups)
     
-    if not lista_ups:
-        st.warning("Aguardando preenchimento da coluna CELULA na planilha...")
-    else:
-        ups_selecionada = st.sidebar.selectbox("Escolha a Célula", lista_ups)
-        h_inicio = st.sidebar.text_input("Hora de Início", value="07:12")
+    h_inicio = st.sidebar.text_input("Hora de Início", value="07:12")
+    
+    st.sidebar.markdown("---")
+    n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
+    n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
+    fator = n_dia / n_nat
+
+    df_ups = df_base_total[df_base_total['CELULA'] == ups_selecionada]
+    opcoes_modelos = df_ups['MODELO'].unique().tolist()
+
+    st.header(f"📋 Programação: {ups_selecionada}")
+    
+    df_editor = st.data_editor(
+        pd.DataFrame([{"MODELO": opcoes_modelos[0], "Qtd": 0}]),
+        num_rows="dynamic", use_container_width=True,
+        column_config={
+            "MODELO": st.column_config.SelectboxColumn("Modelo", options=opcoes_modelos, required=True),
+            "Qtd": st.column_config.NumberColumn("Qtd", min_value=0)
+        }
+    )
+
+    if st.button("🚀 Calcular Planejamento"):
+        res = run_calculation(df_editor, df_ups, h_inicio, fator)
+        st.divider()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Peças Totais", f"{int(res['total'])} pçs")
+        c2.metric("Eficiência Real", f"{fator:.2%}")
+        c3.metric("Ginástica", "SIM" if res['ginastica'] else "NÃO")
         
-        st.sidebar.markdown("---")
-        n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
-        n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
-        fator = n_dia / n_nat
-
-        df_ups = df_base_total[df_base_total['CELULA'] == ups_selecionada]
-        opcoes_modelos = df_ups['MODELO'].unique().tolist()
-
-        st.header(f"📋 Programação: {ups_selecionada}")
-        
-        df_editor = st.data_editor(
-            pd.DataFrame([{"MODELO": opcoes_modelos[0], "Qtd": 0}]),
-            num_rows="dynamic", use_container_width=True,
-            column_config={
-                "MODELO": st.column_config.SelectboxColumn("Modelo", options=opcoes_modelos, required=True),
-                "Qtd": st.column_config.NumberColumn("Qtd", min_value=0)
-            }
-        )
-
-        if st.button("🚀 Calcular Planejamento"):
-            res = run_calculation(df_editor, df_ups, h_inicio, fator)
-            st.divider()
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Peças Totais", f"{int(res['total'])} pçs")
-            c2.metric("Eficiência Real", f"{fator:.2%}")
-            c3.metric("Ginástica", "SIM" if res['ginastica'] else "NÃO")
-            
-            fig = px.bar(res['df'], x='Horário', y='Peças', text='Peças', title="Volume por Horário", color_discrete_sequence=['#007BFF'])
-            st.plotly_chart(fig, use_container_width=True)
-            st.table(res['df'])
+        fig = px.bar(res['df'], x='Horário', y='Peças', text='Peças', title="Volume por Horário", color_discrete_sequence=['#007BFF'])
+        st.plotly_chart(fig, use_container_width=True)
+        st.table(res['df'])
 
 except Exception as e:
-    st.error(f"Erro: Verifique se as colunas MODELO, UNIDADE HORA e CELULA existem na planilha. (Detalhe: {e})")
+    st.error(f"Erro ao processar: {e}. Verifique se a Base de Dados começa na coluna F da planilha.")
