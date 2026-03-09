@@ -7,6 +7,18 @@ st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
+# Dicionário de padronização conforme solicitado
+PADROES_N = {
+    "UPS - 1": 5,
+    "UPS - 2": 3,
+    "UPS - 3": 3,
+    "UPS - 4": 3,
+    "UPS - 6": 4,
+    "UPS - 7": 4,
+    "UPS - 8": 4,
+    "ACS - 01": 2
+}
+
 @st.cache_data(ttl=30)
 def carregar_base():
     df_raw = pd.read_csv(URL_BASE, header=None)
@@ -91,38 +103,40 @@ try:
     if not base.empty:
         st.sidebar.title("⚙️ Controle")
         
-        # Filtro de UPS Obrigatório
         lista_ups = sorted(base['CELULA'].unique().tolist())
         sel_ups = st.sidebar.selectbox("Selecionar Célula (UPS)", lista_ups)
         
+        valor_padrao_n = PADROES_N.get(sel_ups, 3)
         h_ini = st.sidebar.text_input("Início", value="07:12")
         tem_gin = st.sidebar.checkbox("Ginástica Laboral?", value=False)
-        n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
-        n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
+        
+        n_nat = st.sidebar.number_input("N Natural", value=valor_padrao_n, min_value=1, step=1)
+        n_dia = st.sidebar.number_input("N do Dia", value=valor_padrao_n, min_value=1, step=1)
         fator = n_dia / n_nat
 
-        # Filtra as opções baseada na escolha da UPS
         df_f = base[base['CELULA'] == sel_ups]
         opcoes_filtradas = df_f['DISPLAY'].tolist()
 
+        # LOGICA DE LIMPEZA REAL
+        # Se o botão for clicado, limpamos o estado da tabela
         col1, col2 = st.columns([0.8, 0.2])
         with col1: st.header(f"📋 Programação: {sel_ups}")
         with col2: 
-            if st.button("🗑️ Limpar"): 
-                st.cache_data.clear(); st.rerun()
+            if st.button("🗑️ Limpar Tudo"): 
+                # Geramos uma nova chave para o editor, forçando ele a resetar
+                st.session_state["reset_key"] = st.session_state.get("reset_key", 0) + 1
+                st.rerun()
 
-        # Agora o SelectboxColumn usa APENAS as opções filtradas da UPS escolhida
+        # Usamos uma chave composta para o editor que muda quando clicamos em Limpar
+        chave_editor = f"editor_{sel_ups}_{st.session_state.get('reset_key', 0)}"
+
         df_editor = st.data_editor(
             pd.DataFrame(columns=["Equipamento", "Qtd"]),
             num_rows="dynamic", use_container_width=True,
             column_config={
-                "Equipamento": st.column_config.SelectboxColumn(
-                    "Equipamento", 
-                    options=opcoes_filtradas, # FILTRO APLICADO AQUI
-                    required=True
-                ),
+                "Equipamento": st.column_config.SelectboxColumn("Equipamento", options=opcoes_filtradas, required=True),
                 "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)
-            }, key=f"editor_{sel_ups}" # Chave dinâmica para forçar reset ao trocar UPS
+            }, key=chave_editor
         )
 
         if st.button("🚀 Gerar Planejamento"):
