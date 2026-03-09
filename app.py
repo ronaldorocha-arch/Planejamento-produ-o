@@ -5,9 +5,10 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
+# Link da sua planilha do Google
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
-# Dicionário de padronização conforme solicitado
+# Padrões de N Natural por Célula
 PADROES_N = {
     "UPS - 1": 5,
     "UPS - 2": 3,
@@ -19,35 +20,56 @@ PADROES_N = {
     "ACS - 01": 2
 }
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=10) # Reduzi para 10 segundos para atualizar mais rápido se você mudar a planilha
 def carregar_base():
-    df_raw = pd.read_csv(URL_BASE, header=None)
-    m_row, m_col, u_col, c_col, d_col = -1, -1, -1, -1, -1
-    for r in range(min(20, len(df_raw))):
-        for c in range(min(20, len(df_raw.columns))):
-            val = str(df_raw.iloc[r, c]).strip().upper()
-            if val == "MODELO": m_row, m_col = r, c
-            elif "UNIDADE" in val and "HORA" in val: u_col = c
-            elif "DESCRIÇÃO" in val: d_col = c
-            elif val == "CELULA": c_col = c
-    if m_row == -1: return pd.DataFrame()
-    if c_col == -1: c_col = df_raw.columns[-1]
-    if d_col == -1: d_col = m_col + 2
-    dados = df_raw.iloc[m_row+1:].copy()
-    df_f = pd.DataFrame()
-    df_f['ID'] = dados.iloc[:, m_col].astype(str).str.strip()
-    df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, u_col], errors='coerce')
-    df_f['DESCRICAO'] = dados.iloc[:, d_col].astype(str).str.strip()
-    df_f['CELULA'] = dados.iloc[:, c_col].fillna(method='ffill').astype(str).str.strip()
-    df_f['DISPLAY'] = df_f['ID'] + " - " + df_f['DESCRICAO'] + " (" + df_f['UNIDADE_HORA'].astype(str) + " pç/h)"
-    return df_f[df_f['ID'] != 'nan'].dropna(subset=['UNIDADE_HORA'])
+    try:
+        df_raw = pd.read_csv(URL_BASE, header=None)
+        m_row, m_col, u_col, c_col, d_col = -1, -1, -1, -1, -1
+        
+        # Localiza os cabeçalhos
+        for r in range(min(25, len(df_raw))):
+            for c in range(min(20, len(df_raw.columns))):
+                val = str(df_raw.iloc[r, c]).strip().upper()
+                if val == "MODELO": m_row, m_col = r, c
+                elif "UNIDADE" in val and "HORA" in val: u_col = c
+                elif "DESCRIÇÃO" in val or "DESCRICAO" in val: d_col = c
+                elif "CELULA" in val or "CÉLULA" in val: c_col = c
+        
+        if m_row == -1: return pd.DataFrame()
+        
+        # Extração e limpeza
+        dados = df_raw.iloc[m_row+1:].copy()
+        df_f = pd.DataFrame()
+        df_f['ID'] = dados.iloc[:, m_col].astype(str).str.strip()
+        df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, u_col], errors='coerce')
+        
+        # Pega descrição (coluna H ou busca por nome)
+        idx_desc = d_col if d_col != -1 else m_col + 2
+        df_f['DESCRICAO'] = dados.iloc[:, idx_desc].astype(str).str.strip()
+        
+        # Pega Célula e preenche para baixo (ffill)
+        idx_cel = c_col if c_col != -1 else df_raw.columns[-1]
+        df_f['CELULA'] = dados.iloc[:, idx_cel].replace(['nan', 'None', ''], None).ffill().astype(str).str.strip()
+        
+        # Filtro Anti-Sujeira: remove linhas onde o modelo é vazio ou "nan"
+        df_f = df_f[df_f['ID'].str.lower() != 'nan']
+        df_f = df_f[df_f['ID'] != '']
+        
+        # Cria o nome que aparece no seletor
+        df_f['DISPLAY'] = df_f['ID'] + " - " + df_f['DESCRICAO'] + " (" + df_f['UNIDADE_HORA'].astype(str) + " pç/h)"
+        
+        return df_f.dropna(subset=['UNIDADE_HORA'])
+    except Exception as e:
+        st.error(f"Erro ao ler planilha: {e}")
+        return pd.DataFrame()
 
 def gerar_grade(h_ini, tem_ginastica):
     fmt = "%H:%M"
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
-    mins_pad = [50, 60, 60, 0, 60, 60, 50, 60, 60]
+    mins_pad = [50, 60, 60, 0, 60, 60, 50, 60, 60] # 0 é o almoço
     try: ini = datetime.strptime(h_ini, fmt)
     except: ini = datetime.strptime("07:12", fmt)
+    
     grade, atual = [], ini
     for i, m_s in enumerate(marcos):
         m_dt = datetime.strptime(m_s, fmt)
@@ -73,6 +95,7 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin):
     total_desejado = df_in['FALTA'].sum()
     res, acum, c_idx, tot = [], 0.0, 0, 0
     termino = "Incompleto"
+
     for _, s in slots.iterrows():
         hor, t_b, f_dt = s['Horário'], s['Minutos'], s['Fim_dt']
         if t_b == 0:
@@ -97,37 +120,36 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin):
             termino = (f_dt - timedelta(minutes=acum)).strftime("%H:%M")
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
 
-# --- Interface ---
+# --- INTERFACE ---
 try:
     base = carregar_base()
     if not base.empty:
         st.sidebar.title("⚙️ Controle")
         
-        lista_ups = sorted(base['CELULA'].unique().tolist())
+        # Filtro de UPS
+        lista_ups = sorted([u for u in base['CELULA'].unique() if str(u).lower() != 'nan'])
         sel_ups = st.sidebar.selectbox("Selecionar Célula (UPS)", lista_ups)
         
+        # Padrões automáticos de N
         valor_padrao_n = PADROES_N.get(sel_ups, 3)
-        h_ini = st.sidebar.text_input("Início", value="07:12")
-        tem_gin = st.sidebar.checkbox("Ginástica Laboral?", value=False)
+        h_ini = st.sidebar.text_input("Início da Produção", value="08:00")
+        tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
         
-        n_nat = st.sidebar.number_input("N Natural", value=valor_padrao_n, min_value=1, step=1)
-        n_dia = st.sidebar.number_input("N do Dia", value=valor_padrao_n, min_value=1, step=1)
+        n_nat = st.sidebar.number_input("N Natural (Padrão)", value=valor_padrao_n, min_value=1, step=1)
+        n_dia = st.sidebar.number_input("N do Dia (Real)", value=valor_padrao_n, min_value=1, step=1)
         fator = n_dia / n_nat
 
         df_f = base[base['CELULA'] == sel_ups]
-        opcoes_filtradas = df_f['DISPLAY'].tolist()
+        opcoes_filtradas = sorted(df_f['DISPLAY'].tolist())
 
-        # LOGICA DE LIMPEZA REAL
-        # Se o botão for clicado, limpamos o estado da tabela
         col1, col2 = st.columns([0.8, 0.2])
         with col1: st.header(f"📋 Programação: {sel_ups}")
         with col2: 
             if st.button("🗑️ Limpar Tudo"): 
-                # Geramos uma nova chave para o editor, forçando ele a resetar
                 st.session_state["reset_key"] = st.session_state.get("reset_key", 0) + 1
                 st.rerun()
 
-        # Usamos uma chave composta para o editor que muda quando clicamos em Limpar
+        # Chave dinâmica para limpar a tabela de verdade
         chave_editor = f"editor_{sel_ups}_{st.session_state.get('reset_key', 0)}"
 
         df_editor = st.data_editor(
@@ -144,11 +166,17 @@ try:
                 r = calcular(df_editor, base, h_ini, fator, tem_gin)
                 st.divider()
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total", f"{int(r['tot'])} pçs")
-                m2.metric("Término", r['termino'])
-                m3.metric("Fator", f"{fator:.2%}")
+                m1.metric("Total Planejado", f"{int(r['tot'])} pçs")
+                m2.metric("Término Estimado", r['termino'])
+                m3.metric("Fator Eficiência", f"{fator:.2%}")
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
-                st.subheader("🗓️ Cronograma Detalhado")
+                
+                st.subheader("🗓️ Cronograma por Modelo")
                 st.table(r['df'])
+            else:
+                st.warning("Adicione equipamentos na tabela acima clicando no (+)")
+    else:
+        st.error("Planilha vazia ou não encontrada. Verifique os títulos MODELO e CELULA.")
+
 except Exception as e:
-    st.error(f"Erro: {e}")
+    st.error(f"Erro inesperado: {e}")
