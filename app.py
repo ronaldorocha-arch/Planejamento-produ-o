@@ -5,25 +5,27 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
-# Link da sua planilha do Google
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
+# Padrões de N Natural por Célula
 PADROES_N = {
     "UPS - 1": 5, "UPS - 2": 3, "UPS - 3": 3, "UPS - 4": 3,
     "UPS - 6": 4, "UPS - 7": 4, "UPS - 8": 4, "ACS - 01": 2
 }
 
-@st.cache_data(ttl=5) # Atualização quase em tempo real
+@st.cache_data(ttl=5)
 def carregar_base():
     try:
+        # Lê a planilha bruta
         df_raw = pd.read_csv(URL_BASE, header=None).astype(str)
         
+        # BUSCA PRECISA: Vamos procurar o "MODELO" que tem a "UNIDADE" logo ao lado
         m_row, m_col = -1, -1
-        # Busca por qualquer célula que CONTENHA "MODELO"
-        for r in range(min(100, len(df_raw))): 
-            for c in range(min(20, len(df_raw.columns))):
+        for r in range(min(50, len(df_raw))): 
+            for c in range(min(15, len(df_raw.columns))):
                 val = df_raw.iloc[r, c].strip().upper()
-                if "MODELO" in val:
+                # Verifica se é o cabeçalho real (coluna 6 na sua planilha)
+                if val == "MODELO" and c > 0: 
                     m_row, m_col = r, c
                     break
             if m_row != -1: break
@@ -33,21 +35,25 @@ def carregar_base():
         dados = df_raw.iloc[m_row+1:].copy()
         df_f = pd.DataFrame()
         
-        # Mapeamento por posição relativa ao "MODELO" encontrado
+        # Conforme o seu print:
+        # Coluna 6 = MODELO
+        # Coluna 7 = UNIDADE
+        # Coluna 8 = DESCRIÇÃO
+        # Coluna 9 = UPS
         df_f['ID'] = dados.iloc[:, m_col].str.strip()
         df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, m_col+1], errors='coerce')
         df_f['DESCRICAO'] = dados.iloc[:, m_col+2].str.strip()
         
-        # Busca a coluna da CÉLULA (procurando "UPS" ou "ACS" nas colunas próximas)
-        c_col_idx = m_col + 3
-        df_f['CELULA'] = dados.iloc[:, c_col_idx].replace(['nan', 'None', '', 'NAN'], None).ffill().str.strip()
+        # Pega a coluna 9 para a UPS e faz o preenchimento para baixo (ffill)
+        cel_raw = dados.iloc[:, m_col+3].replace(['nan', 'None', '', 'None'], None)
+        df_f['CELULA'] = cel_raw.ffill().str.strip()
         
-        # Limpeza: remove linhas que não são produtos
+        # Limpeza: remove linhas que não são produtos reais
         df_f = df_f[df_f['ID'].str.len() > 3]
-        df_f = df_f[~df_f['ID'].str.contains('MODELO|UNIDADE|DESC', case=False, na=False)]
+        df_f = df_f[~df_f['ID'].isin(['MODELO', 'nan', 'None'])]
         
-        # Filtro para manter apenas linhas com UPS ou ACS válidos
-        df_f = df_f[df_f['CELULA'].str.contains('UPS|ACS', case=False, na=False)]
+        # Filtro de segurança para as Células
+        df_f = df_f[df_f['CELULA'].str.contains('UPS|ACS|ACS - 01', case=False, na=False)]
         
         df_f['DISPLAY'] = df_f['ID'] + " - " + df_f['DESCRICAO'] + " (" + df_f['UNIDADE_HORA'].astype(str) + " pç/h)"
         
@@ -56,7 +62,7 @@ def carregar_base():
         st.error(f"Erro na leitura: {e}")
         return pd.DataFrame()
 
-# --- FUNÇÕES DE CÁLCULO ---
+# --- CÁLCULO E GRADE ---
 def gerar_grade(h_ini, tem_gin):
     fmt = "%H:%M"
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
@@ -160,10 +166,7 @@ try:
             else:
                 st.warning("Adicione modelos na tabela.")
     else:
-        st.error("⚠️ Estrutura não detectada. Verifique se o título 'MODELO' existe na sua planilha.")
-        # Mostra as primeiras linhas da planilha para você ver o que o Python está lendo
-        df_debug = pd.read_csv(URL_BASE, header=None).head(10)
-        st.write("Dados lidos do topo da planilha:", df_debug)
+        st.error("⚠️ Estrutura não detectada. Verifique a planilha.")
 
 except Exception as e:
     st.error(f"Erro Crítico: {e}")
