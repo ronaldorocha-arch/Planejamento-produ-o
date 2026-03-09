@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import math
 from datetime import datetime, timedelta
-import plotly.express as px
 
 st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
@@ -12,29 +11,22 @@ URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB
 def carregar_base():
     df_raw = pd.read_csv(URL_BASE, header=None)
     m_row, m_col, u_col, c_col = -1, -1, -1, -1
-
     for r in range(min(20, len(df_raw))):
         for c in range(min(15, len(df_raw.columns))):
             val = str(df_raw.iloc[r, c]).strip().upper()
             if val == "MODELO": m_row, m_col = r, c
             elif "UNIDADE" in val and "HORA" in val: u_col = c
             elif val == "CELULA": c_col = c
-
     if m_row == -1: return pd.DataFrame()
     if c_col == -1: c_col = df_raw.columns[-1]
-
     dados = df_raw.iloc[m_row+1:].copy()
     df_f = pd.DataFrame()
     df_f['ID'] = dados.iloc[:, m_col].astype(str).str.strip()
     df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, u_col], errors='coerce')
     df_f['CELULA'] = dados.iloc[:, c_col].fillna(method='ffill').astype(str).str.strip()
-    
-    # Criar o nome que aparece no Dropdown (Modelo + Unidade Hora)
-    df_f['MODELO_DISPLAY'] = df_f['ID'] + " | " + df_f['UNIDADE_HORA'].astype(str) + " pç/h"
-    
+    df_f['DISPLAY'] = df_f['ID'] + " | " + df_f['UNIDADE_HORA'].astype(str) + " pç/h"
     return df_f[df_f['ID'] != 'nan'].dropna(subset=['UNIDADE_HORA'])
 
-# --- CÁLCULOS ---
 def gerar_grade(h_ini):
     fmt = "%H:%M"
     tem_gin = datetime.now().weekday() in [0, 2]
@@ -59,12 +51,10 @@ def gerar_grade(h_ini):
 
 def calcular(df_in, df_ba, h_ini, fat):
     slots, gin = gerar_grade(h_ini)
-    # Procura pelo nome de exibição para pegar os dados corretos
-    df_in = df_in.merge(df_ba[['MODELO_DISPLAY', 'ID', 'UNIDADE_HORA']], left_on='Equipamento', right_on='MODELO_DISPLAY', how='left')
+    df_in = df_in.merge(df_ba[['DISPLAY', 'UNIDADE_HORA']], left_on='Equipamento', right_on='DISPLAY', how='left')
     df_in['CAD_R'] = df_in['UNIDADE_HORA'] * fat
     df_in['T_PC'] = 60 / df_in['CAD_R']
     df_in['FALTA'] = pd.to_numeric(df_in['Qtd'], errors='coerce').fillna(0)
-    
     res, acum, c_idx, tot = [], 0.0, 0, 0
     for _, s in slots.iterrows():
         hor, t_b = s['Horário'], s['Minutos']
@@ -87,49 +77,38 @@ def calcular(df_in, df_ba, h_ini, fat):
         res.append({'Horário': hor, 'Peças': int(p_b), 'Acumulada': int(tot)})
     return {'df': pd.DataFrame(res), 'tot': tot, 'gin': gin}
 
-# --- INTERFACE ---
 try:
     base = carregar_base()
     if not base.empty:
         st.sidebar.title("⚙️ Controle")
-        ups = sorted(base['CELULA'].unique().tolist())
-        sel_ups = st.sidebar.selectbox("Célula", ups)
+        sel_ups = st.sidebar.selectbox("Célula", sorted(base['CELULA'].unique().tolist()))
         h_ini = st.sidebar.text_input("Início", value="07:12")
-        
-        st.sidebar.markdown("---")
         n_nat = st.sidebar.number_input("N Natural", value=3, min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=3, min_value=1)
         fator = n_dia / n_nat
 
         df_f = base[base['CELULA'] == sel_ups]
-        opcoes = df_f['MODELO_DISPLAY'].tolist()
-
         st.header(f"📋 Programação: {sel_ups}")
         
-        # AJUSTE: Inicia com tabela vazia (index=[])
+        # TABELA COM BOTÃO DE DELETAR ATIVADO
         df_editor = st.data_editor(
             pd.DataFrame(columns=["Equipamento", "Qtd"]),
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "Equipamento": st.column_config.SelectboxColumn("Equipamento (Modelo | Cadência)", options=opcoes, required=True, width="large"),
+                "Equipamento": st.column_config.SelectboxColumn("Equipamento (Modelo | Cadência)", options=df_f['DISPLAY'].tolist(), required=True),
                 "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)
-            },
-            key="editor_nhs"
+            }
         )
 
         if st.button("🚀 Gerar Planejamento"):
-            if df_editor.empty:
-                st.warning("Adicione equipamentos na tabela acima clicando no '+'")
-            else:
+            if not df_editor.empty:
                 r = calcular(df_editor, df_f, h_ini, fator)
                 st.divider()
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Total", f"{int(r['tot'])} pçs")
                 c2.metric("Eficiência", f"{fator:.2%}")
                 c3.metric("Ginástica", "SIM" if r['gin'] else "NÃO")
-                
-                st.plotly_chart(px.bar(r['df'], x='Horário', y='Peças', text='Peças', title="Produção/Hora"), use_container_width=True)
                 st.table(r['df'])
 except Exception as e:
     st.error(f"Erro: {e}")
