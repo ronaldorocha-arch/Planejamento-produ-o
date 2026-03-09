@@ -5,57 +5,50 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
-# Link da sua planilha do Google
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
 # Padrões de N Natural por Célula
 PADROES_N = {
-    "UPS - 1": 5,
-    "UPS - 2": 3,
-    "UPS - 3": 3,
-    "UPS - 4": 3,
-    "UPS - 6": 4,
-    "UPS - 7": 4,
-    "UPS - 8": 4,
-    "ACS - 01": 2
+    "UPS - 1": 5, "UPS - 2": 3, "UPS - 3": 3, "UPS - 4": 3,
+    "UPS - 6": 4, "UPS - 7": 4, "UPS - 8": 4, "ACS - 01": 2
 }
 
-@st.cache_data(ttl=10) # Reduzi para 10 segundos para atualizar mais rápido se você mudar a planilha
+@st.cache_data(ttl=10)
 def carregar_base():
     try:
+        # Lê a planilha bruta
         df_raw = pd.read_csv(URL_BASE, header=None)
-        m_row, m_col, u_col, c_col, d_col = -1, -1, -1, -1, -1
         
-        # Localiza os cabeçalhos
-        for r in range(min(25, len(df_raw))):
-            for c in range(min(20, len(df_raw.columns))):
-                val = str(df_raw.iloc[r, c]).strip().upper()
-                if val == "MODELO": m_row, m_col = r, c
-                elif "UNIDADE" in val and "HORA" in val: u_col = c
-                elif "DESCRIÇÃO" in val or "DESCRICAO" in val: d_col = c
-                elif "CELULA" in val or "CÉLULA" in val: c_col = c
+        # Localiza a linha do cabeçalho procurando "MODELO" na Coluna F (índice 5)
+        m_row = -1
+        for r in range(min(30, len(df_raw))):
+            val = str(df_raw.iloc[r, 5]).strip().upper()
+            if "MODELO" in val:
+                m_row = r
+                break
         
         if m_row == -1: return pd.DataFrame()
         
-        # Extração e limpeza
+        # Extração baseada na estrutura real da sua planilha
         dados = df_raw.iloc[m_row+1:].copy()
         df_f = pd.DataFrame()
-        df_f['ID'] = dados.iloc[:, m_col].astype(str).str.strip()
-        df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, u_col], errors='coerce')
         
-        # Pega descrição (coluna H ou busca por nome)
-        idx_desc = d_col if d_col != -1 else m_col + 2
-        df_f['DESCRICAO'] = dados.iloc[:, idx_desc].astype(str).str.strip()
+        # Coluna F (5) = MODELO
+        df_f['ID'] = dados.iloc[:, 5].astype(str).str.strip()
+        # Coluna G (6) = UNIDADE HORA
+        df_f['UNIDADE_HORA'] = pd.to_numeric(dados.iloc[:, 6], errors='coerce')
+        # Coluna H (7) = DESCRIÇÃO
+        df_f['DESCRICAO'] = dados.iloc[:, 7].astype(str).str.strip()
+        # Coluna I (8) = CÉLULA (UPS)
+        # Filtramos para garantir que só pegue nomes de UPS/ACS e não códigos
+        celula_raw = dados.iloc[:, 8].replace(['nan', 'None', ''], None)
+        df_f['CELULA'] = celula_raw.ffill().astype(str).str.strip()
         
-        # Pega Célula e preenche para baixo (ffill)
-        idx_cel = c_col if c_col != -1 else df_raw.columns[-1]
-        df_f['CELULA'] = dados.iloc[:, idx_cel].replace(['nan', 'None', ''], None).ffill().astype(str).str.strip()
+        # Limpeza Final: Remove linhas onde o modelo é vazio ou a UPS parece um código
+        df_f = df_f[df_f['ID'].str.len() > 5] # Códigos NHS costumam ser longos
+        df_f = df_f[df_f['CELULA'].str.contains('UPS|ACS', case=False, na=False)]
         
-        # Filtro Anti-Sujeira: remove linhas onde o modelo é vazio ou "nan"
-        df_f = df_f[df_f['ID'].str.lower() != 'nan']
-        df_f = df_f[df_f['ID'] != '']
-        
-        # Cria o nome que aparece no seletor
+        # Nome que aparece no seletor
         df_f['DISPLAY'] = df_f['ID'] + " - " + df_f['DESCRICAO'] + " (" + df_f['UNIDADE_HORA'].astype(str) + " pç/h)"
         
         return df_f.dropna(subset=['UNIDADE_HORA'])
@@ -63,13 +56,13 @@ def carregar_base():
         st.error(f"Erro ao ler planilha: {e}")
         return pd.DataFrame()
 
+# --- LÓGICA DE CÁLCULO MANTIDA ---
 def gerar_grade(h_ini, tem_ginastica):
     fmt = "%H:%M"
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
-    mins_pad = [50, 60, 60, 0, 60, 60, 50, 60, 60] # 0 é o almoço
+    mins_pad = [50, 60, 60, 0, 60, 60, 50, 60, 60]
     try: ini = datetime.strptime(h_ini, fmt)
     except: ini = datetime.strptime("07:12", fmt)
-    
     grade, atual = [], ini
     for i, m_s in enumerate(marcos):
         m_dt = datetime.strptime(m_s, fmt)
@@ -95,7 +88,6 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin):
     total_desejado = df_in['FALTA'].sum()
     res, acum, c_idx, tot = [], 0.0, 0, 0
     termino = "Incompleto"
-
     for _, s in slots.iterrows():
         hor, t_b, f_dt = s['Horário'], s['Minutos'], s['Fim_dt']
         if t_b == 0:
@@ -126,11 +118,9 @@ try:
     if not base.empty:
         st.sidebar.title("⚙️ Controle")
         
-        # Filtro de UPS
-        lista_ups = sorted([u for u in base['CELULA'].unique() if str(u).lower() != 'nan'])
+        lista_ups = sorted([u for u in base['CELULA'].unique() if "UPS" in str(u) or "ACS" in str(u)])
         sel_ups = st.sidebar.selectbox("Selecionar Célula (UPS)", lista_ups)
         
-        # Padrões automáticos de N
         valor_padrao_n = PADROES_N.get(sel_ups, 3)
         h_ini = st.sidebar.text_input("Início da Produção", value="08:00")
         tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
@@ -149,7 +139,6 @@ try:
                 st.session_state["reset_key"] = st.session_state.get("reset_key", 0) + 1
                 st.rerun()
 
-        # Chave dinâmica para limpar a tabela de verdade
         chave_editor = f"editor_{sel_ups}_{st.session_state.get('reset_key', 0)}"
 
         df_editor = st.data_editor(
@@ -171,12 +160,12 @@ try:
                 m3.metric("Fator Eficiência", f"{fator:.2%}")
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
                 
-                st.subheader("🗓️ Cronograma por Modelo")
+                st.subheader("🗓️ Cronograma Detalhado")
                 st.table(r['df'])
             else:
-                st.warning("Adicione equipamentos na tabela acima clicando no (+)")
+                st.warning("Adicione equipamentos na tabela acima.")
     else:
-        st.error("Planilha vazia ou não encontrada. Verifique os títulos MODELO e CELULA.")
+        st.error("Erro na estrutura da planilha. Verifique as colunas de Modelo e Célula.")
 
 except Exception as e:
-    st.error(f"Erro inesperado: {e}")
+    st.error(f"Erro: {e}")
