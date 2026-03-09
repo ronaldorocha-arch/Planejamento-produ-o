@@ -10,29 +10,42 @@ URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB
 
 @st.cache_data(ttl=60)
 def carregar_base():
-    # Lê a planilha bruta
+    # Lê a planilha bruta sem pular colunas
     df_raw = pd.read_csv(URL_BASE)
     
-    # 1. Localiza a coluna 'MODELO' (Geralmente é a coluna F, índice 5)
-    # Vamos procurar pelo nome para garantir
+    # Limpa nomes de colunas (tira espaços e coloca em maiúsculo)
     df_raw.columns = [str(c).strip().upper() for c in df_raw.columns]
     
-    # Criamos um novo DF pegando apenas a parte da Base de Dados (Colunas F, G, H, I)
-    # Na maioria das exportações de CSV, o Pandas nomeia colunas vazias como 'Unnamed'
-    # Vamos pegar as colunas pelos índices que vi na sua foto:
-    df = pd.DataFrame()
-    df['MODELO'] = df_raw.iloc[:, 5].astype(str).str.strip() # Coluna F
-    df['UNIDADE_HORA'] = pd.to_numeric(df_raw.iloc[:, 6], errors='coerce') # Coluna G
-    df['CELULA_BRUTA'] = df_raw.iloc[:, 8].astype(str).str.strip() # Coluna I (UPS)
+    # Lista de colunas que precisamos encontrar
+    cols_necessarias = ['MODELO', 'UNIDADE HORA']
+    
+    # Verifica se as colunas básicas existem
+    for c in cols_necessarias:
+        if c not in df_raw.columns:
+            # Se não achou pelo nome, tenta achar a coluna que CONTÉM o nome
+            for real_col in df_raw.columns:
+                if c in real_col:
+                    df_raw.rename(columns={real_col: c}, inplace=True)
+                    break
+    
+    # A última coluna ou a coluna 'CELULA' (UPS)
+    col_ups = 'CELULA'
+    if col_ups not in df_raw.columns:
+        # Se você não criou o nome 'CELULA', ele tenta pegar a última coluna com dados
+        df_raw.rename(columns={df_raw.columns[-1]: col_ups}, inplace=True)
 
-    # 2. Limpa o "lixo" e preenche as células mescladas das UPS
+    # Cria o DataFrame de trabalho limpando linhas vazias
+    df = df_raw[[ 'MODELO', 'UNIDADE HORA', 'CELULA' ]].copy()
+    
+    # Remove linhas onde o modelo é nulo ou a unidade hora não é número
+    df['MODELO'] = df['MODELO'].astype(str).str.strip()
     df = df[df['MODELO'] != 'nan']
-    df['CELULA'] = df['CELULA_BRUTA'].replace('nan', None).ffill()
+    df['UNIDADE HORA'] = pd.to_numeric(df['UNIDADE HORA'], errors='coerce')
     
-    # 3. Remove as linhas de cabeçalho que o Pandas pode ter lido como dados
-    df = df[df['MODELO'].str.contains('MODELO') == False]
+    # Preenchimento automático da UPS (ffill)
+    df['CELULA'] = df['CELULA'].replace('nan', None).ffill()
     
-    return df.dropna(subset=['UNIDADE_HORA', 'CELULA'])
+    return df.dropna(subset=['UNIDADE HORA', 'CELULA'])
 
 # --- LÓGICA DE GRADE E CÁLCULO ---
 def gerar_grade_flexivel(hora_inicio_str):
@@ -65,7 +78,7 @@ def gerar_grade_flexivel(hora_inicio_str):
 def run_calculation(df_input, df_base, hora_inicio, fator):
     time_slots_df, houve_ginastica = gerar_grade_flexivel(hora_inicio)
     models_df = df_input.merge(df_base, on='MODELO', how='left')
-    models_df['CADENCIA_REAL'] = models_df['UNIDADE_HORA'] * fator
+    models_df['CADENCIA_REAL'] = models_df['UNIDADE HORA'] * fator
     models_df['Tempo_peca'] = 60 / models_df['CADENCIA_REAL']
     models_df['QTD_RESTANTE'] = pd.to_numeric(models_df['Qtd'], errors='coerce').fillna(0)
     
@@ -109,7 +122,7 @@ try:
     fator = n_dia / n_nat
 
     df_ups = df_base_total[df_base_total['CELULA'] == ups_selecionada]
-    opcoes_modelos = df_ups['MODELO'].unique().tolist()
+    opcoes_modelos = sorted(df_ups['MODELO'].unique().tolist())
 
     st.header(f"📋 Programação: {ups_selecionada}")
     
@@ -135,4 +148,5 @@ try:
         st.table(res['df'])
 
 except Exception as e:
-    st.error(f"Erro ao processar: {e}. Verifique se a Base de Dados começa na coluna F da planilha.")
+    st.error(f"Erro ao processar planilha: {e}")
+    st.info("Certifique-se de que os títulos MODELO e UNIDADE HORA estão escritos corretamente na planilha.")
