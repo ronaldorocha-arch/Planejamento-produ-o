@@ -48,7 +48,7 @@ def carregar_base():
     except Exception as e:
         st.error(f"Erro na leitura: {e}"); return pd.DataFrame()
 
-def gerar_grade_fixa(h_ini, regras, tem_gin):
+def gerar_grade_fixa(h_ini_input, regras, tem_gin):
     def para_min(h_str):
         h, m = map(int, h_str.split(':'))
         return h * 60 + m
@@ -59,15 +59,17 @@ def gerar_grade_fixa(h_ini, regras, tem_gin):
     m_cafe_t = para_min(regras['cafe_t'])
     m_gin = para_min("09:30")
 
-    # Grade conforme solicitado: 7:45 -> 8:30 -> 9:30 ... -> 17:30
-    marcos = ["07:45", "08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
+    # Grade baseada no horário de início fornecido pelo usuário e depois segue os marcos
+    marcos_estaticos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
+    
+    # Criar a lista de pontos começando pelo input do usuário
+    pontos_horario = [h_ini_input] + [m for m in marcos_estaticos if para_min(m) > para_min(h_ini_input)]
     
     grade = []
-    for i in range(len(marcos)-1):
-        p_ini = para_min(marcos[i])
-        p_fim = para_min(marcos[i+1])
+    for i in range(len(pontos_horario)-1):
+        p_ini = para_min(pontos_horario[i])
+        p_fim = para_min(pontos_horario[i+1])
         
-        # Calcula minutos úteis descontando intervalos silenciosamente
         minutos_uteis = 0
         for m in range(p_ini, p_fim):
             is_cafe_m = (m_cafe_m <= m < m_cafe_m + 10)
@@ -78,9 +80,8 @@ def gerar_grade_fixa(h_ini, regras, tem_gin):
                 minutos_uteis += 1
         
         grade.append({
-            'Horário': f"{marcos[i]} – {marcos[i+1]}",
-            'Minutos': minutos_uteis,
-            'Fim_dt': datetime.strptime(marcos[i+1], "%H:%M")
+            'Horário': f"{pontos_horario[i]} – {pontos_horario[i+1]}",
+            'Minutos': minutos_uteis
         })
     return pd.DataFrame(grade)
 
@@ -118,8 +119,6 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
             minutos_usados = s['Minutos'] - acum
             h_str, m_str = s['Horário'].split(' – ')[0].split(':')
             dt_base = datetime.strptime(f"{h_str}:{m_str}", "%H:%M") + timedelta(minutes=minutos_usados)
-            # Se cair no almoço, o cálculo real do término precisaria de uma lógica extra, 
-            # mas para visualização simples do cronograma, esta aproximação funciona.
             termino = dt_base.strftime("%H:%M")
 
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
@@ -133,7 +132,9 @@ try:
         sel_ups = st.sidebar.selectbox("Selecionar Célula", lista_ups)
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
         
-        h_ini = "07:45" # Fixo conforme pedido
+        # CAMPO DE VOLTA: Agora você pode editar se quiser, mas inicia em 07:45
+        h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
+        
         tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=regra_atual['n_nat'], min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=regra_atual['n_nat'], min_value=1)
@@ -169,7 +170,7 @@ try:
                 c6.metric("☕ Café Tarde", regra_atual['cafe_t'])
                 
                 st.subheader("🗓️ Cronograma de Produção")
-                st.table(r['df']) # Planilha limpa sem linhas de intervalo
+                st.table(r['df']) 
             else: st.warning("Adicione modelos na tabela.")
     else: st.error("⚠️ Erro na Planilha.")
 except Exception as e: st.error(f"Erro Crítico: {e}")
