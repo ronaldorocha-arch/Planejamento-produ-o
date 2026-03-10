@@ -30,19 +30,15 @@ def carregar_base():
                 m_row = r
                 break
         if m_row == -1: return pd.DataFrame()
-        
         dados = df_raw.iloc[m_row+1:m_row+3000].copy()
         lista_final, celula_atual = [], "Indefinida"
-        
         for i in range(len(dados)):
             modelo = str(dados.iloc[i, 6]).strip()
             unidade = pd.to_numeric(dados.iloc[i, 7], errors='coerce')
             descricao = str(dados.iloc[i, 8]).strip()
             cel_na_linha = str(dados.iloc[i, 9]).strip().upper()
-
             if any(x in cel_na_linha for x in ["UPS", "ACS", "ACE"]):
                 celula_atual = str(dados.iloc[i, 9]).strip()
-            
             if modelo != 'nan' and len(modelo) > 3 and not pd.isna(unidade):
                 lista_final.append({
                     'ID': modelo, 'UNIDADE_HORA': unidade, 'DESCRICAO': descricao,
@@ -64,34 +60,24 @@ def gerar_grade_com_eventos(h_ini, regras, tem_gin):
         {"nome": "🍱 ALMOÇO", "inicio": para_min(regras['almoco']), "duracao": 60},
         {"nome": "☕ CAFÉ TARDE", "inicio": para_min(regras['cafe_t']), "duracao": 10}
     ]
-    if tem_gin:
-        eventos.append({"nome": "🤸 GINÁSTICA", "inicio": para_min("09:30"), "duracao": 10})
+    if tem_gin: eventos.append({"nome": "🤸 GINÁSTICA", "inicio": para_min("09:30"), "duracao": 10})
     
     eventos = sorted(eventos, key=lambda x: x['inicio'])
-    
-    # Marcos de tempo para quebrar a tabela (de hora em hora)
-    marcos = [480, 540, 600, 660, 720, 780, 840, 900, 960, 1020, 1080] # 08h as 18h
-    
+    marcos = [480, 540, 600, 660, 720, 780, 840, 900, 960, 1020, 1080]
     pontos = sorted(list(set([m_ini] + marcos + [e['inicio'] for e in eventos] + [e['inicio']+e['duracao'] for e in eventos])))
-    pontos = [p for p in pontos if p >= m_ini and p <= 1110] # até 18:30
+    pontos = [p for p in pontos if p >= m_ini and p <= 1110]
 
     grade = []
     for i in range(len(pontos)-1):
-        p_ini, p_fim = pontos[i], pontos[j := i+1]
-        dur_total = p_fim - p_ini
-        
-        # Verifica se é um evento
+        p_ini, p_fim = pontos[i], pontos[i+1]
         nome_evento = None
         for e in eventos:
             if p_ini >= e['inicio'] and p_fim <= (e['inicio'] + e['duracao']):
-                nome_evento = e['nome']
-                break
-        
-        dur_util = 0 if nome_evento else dur_total
+                nome_evento = e['nome']; break
         
         grade.append({
             'Horário': f"{str(p_ini//60).zfill(2)}:{str(p_ini%60).zfill(2)} – {str(p_fim//60).zfill(2)}:{str(p_fim%60).zfill(2)}",
-            'Minutos': dur_util,
+            'Minutos': 0 if nome_evento else (p_fim - p_ini),
             'Evento': nome_evento,
             'Fim_dt': datetime.strptime(f"{str(p_fim//60).zfill(2)}:{str(p_fim%60).zfill(2)}", fmt)
         })
@@ -103,7 +89,6 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
     df_in['CAD_R'] = df_in['UNIDADE_HORA'] * fat
     df_in['T_PC'] = 60 / df_in['CAD_R']
     df_in['FALTA'] = pd.to_numeric(df_in['Qtd'], errors='coerce').fillna(0)
-    
     total_desejado, res, acum, c_idx, tot = df_in['FALTA'].sum(), [], 0.0, 0, 0
     termino = "Não finalizado"
     
@@ -111,33 +96,26 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
         if s['Evento']:
             res.append({'Horário': s['Horário'], 'Modelos': s['Evento'], 'Peças': 0, 'Acumulada': tot})
             continue
-            
         acum += s['Minutos']
         p_b, mods = 0, []
         while c_idx < len(df_in):
             t_p = df_in.loc[c_idx, 'T_PC']
             if pd.isna(t_p) or t_p <= 0: c_idx += 1; continue
-            
             if acum >= (t_p - 0.001):
                 q = min(math.floor(acum / t_p + 0.001), df_in.loc[c_idx, 'FALTA'])
                 if q > 0:
-                    acum -= (q * t_p)
-                    df_in.loc[c_idx, 'FALTA'] -= q
+                    acum -= (q * t_p); df_in.loc[c_idx, 'FALTA'] -= q
                     tot += q; p_b += q
                     mods.append(f"{df_in.loc[c_idx, 'ID']} ({int(q)} pçs)")
                 if df_in.loc[c_idx, 'FALTA'] <= 0: c_idx += 1
                 else: break
             else: break
-            
         res.append({'Horário': s['Horário'], 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
-        
         if tot >= total_desejado and termino == "Não finalizado" and total_desejado > 0:
-            # Cálculo do tempo real de término dentro do bloco
             minutos_usados = s['Minutos'] - acum
             hora_f, min_f = map(int, s['Horário'].split('–')[0].split(':'))
             dt_base = datetime.strptime(f"{hora_f}:{min_f}", "%H:%M") + timedelta(minutes=minutos_usados)
             termino = dt_base.strftime("%H:%M")
-
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
 
 # --- INTERFACE ---
@@ -147,7 +125,6 @@ try:
         st.sidebar.title("⚙️ Controle")
         lista_ups = sorted(base['CELULA'].unique().tolist())
         sel_ups = st.sidebar.selectbox("Selecionar Célula", lista_ups)
-        
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
         
         h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
@@ -158,7 +135,6 @@ try:
 
         df_f = base[base['CELULA'] == sel_ups]
         opcoes = sorted(df_f['DISPLAY'].tolist())
-        
         col1, col2 = st.columns([0.8, 0.2])
         with col1: st.header(f"📋 Programação: {sel_ups}")
         with col2: 
@@ -166,36 +142,27 @@ try:
                 st.session_state["reset_key"] = st.session_state.get("reset_key", 0) + 1
                 st.rerun()
 
-        key_ed = f"ed_{sel_ups}_{st.session_state.get('reset_key', 0)}"
-        df_editor = st.data_editor(
-            pd.DataFrame(columns=["Equipamento", "Qtd"]),
-            num_rows="dynamic", use_container_width=True,
-            column_config={
-                "Equipamento": st.column_config.SelectboxColumn("Equipamento", options=opcoes, required=True),
-                "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)
-            }, key=key_ed
-        )
+        df_editor = st.data_editor(pd.DataFrame(columns=["Equipamento", "Qtd"]), num_rows="dynamic", use_container_width=True,
+            column_config={"Equipamento": st.column_config.SelectboxColumn("Equipamento", options=opcoes, required=True), "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)}, 
+            key=f"ed_{sel_ups}_{st.session_state.get('reset_key', 0)}")
 
         if st.button("🚀 Gerar Planejamento"):
             if not df_editor.empty:
                 r = calcular(df_editor, base, h_ini, fator, tem_gin, regra_atual)
                 st.divider()
-                m1, m2, m3, m4 = st.columns(4)
+                
+                # --- MÉTRICAS DE RESUMO (COM OS HORÁRIOS) ---
+                m1, m2, m3 = st.columns(3)
                 m1.metric("Total Planejado", f"{int(r['tot'])} pçs")
                 m2.metric("Término Estimado", r['termino'])
                 m3.metric("Fator Eficiência", f"{fator:.2%}")
-                m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
                 
-                # Exibição estilizada: Almoço e Café ficam em destaque
+                st.write(f"🕒 **Horários da Célula:** Café Manhã: **{regra_atual['cafe_m']}** | Almoço: **{regra_atual['almoco']}** | Café Tarde: **{regra_atual['cafe_t']}**")
+                
+                st.subheader("🗓️ Cronograma")
                 def colorir_eventos(val):
-                    color = 'background-color: #ffcccc' if any(x in str(val) for x in ['CAFÉ', 'ALMOÇO', 'GINÁSTICA']) else ''
-                    return color
-
-                st.subheader("🗓️ Cronograma de Produção")
+                    return 'background-color: #ffcccc' if any(x in str(val) for x in ['CAFÉ', 'ALMOÇO', 'GINÁSTICA']) else ''
                 st.dataframe(r['df'].style.applymap(colorir_eventos, subset=['Modelos']), use_container_width=True)
-            else:
-                st.warning("Adicione modelos na tabela acima para gerar o cronograma.")
-    else:
-        st.error("⚠️ Estrutura não detectada na planilha.")
-except Exception as e:
-    st.error(f"Erro Crítico: {e}")
+            else: st.warning("Adicione modelos na tabela.")
+    else: st.error("⚠️ Erro na Planilha.")
+except Exception as e: st.error(f"Erro Crítico: {e}")
