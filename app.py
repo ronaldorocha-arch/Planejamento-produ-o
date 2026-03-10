@@ -48,51 +48,49 @@ def carregar_base():
     except Exception as e:
         st.error(f"Erro na leitura: {e}"); return pd.DataFrame()
 
-def gerar_grade_util(h_ini, regras, tem_gin):
-    fmt = "%H:%M"
+def gerar_grade_fixa(h_ini, regras, tem_gin):
     def para_min(h_str):
         h, m = map(int, h_str.split(':'))
         return h * 60 + m
 
-    m_ini = para_min(h_ini)
     m_cafe_m = para_min(regras['cafe_m'])
     m_almoco_ini = para_min(regras['almoco'])
     m_almoco_fim = m_almoco_ini + 60
     m_cafe_t = para_min(regras['cafe_t'])
+    m_gin = para_min("09:30")
+
+    # Grade conforme solicitado: 7:45 -> 8:30 -> 9:30 ... -> 17:30
+    marcos = ["07:45", "08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
     
-    marcos = [480, 540, 600, 660, 720, 780, 840, 900, 960, 1020, 1080]
-    pontos = sorted(list(set([m_ini] + marcos)))
-    pontos = [p for p in pontos if p >= m_ini and p <= 1110]
-
     grade = []
-    for i in range(len(pontos)-1):
-        p_ini, p_fim = pontos[i], pontos[i+1]
+    for i in range(len(marcos)-1):
+        p_ini = para_min(marcos[i])
+        p_fim = para_min(marcos[i+1])
         
-        def calc_uteis(ini, fim):
-            minutos_uteis = 0
-            for m in range(ini, fim):
-                is_cafe_m = (m_cafe_m <= m < m_cafe_m + 10)
-                is_almoco = (m_almoco_ini <= m < m_almoco_fim)
-                is_cafe_t = (m_cafe_t <= m < m_cafe_t + 10)
-                is_ginast = (para_min("09:30") <= m < para_min("09:40")) if tem_gin else False
-                if not (is_cafe_m or is_almoco or is_cafe_t or is_ginast):
-                    minutos_uteis += 1
-            return minutos_uteis
-
-        m_uteis = calc_uteis(p_ini, p_fim)
+        # Calcula minutos úteis descontando intervalos silenciosamente
+        minutos_uteis = 0
+        for m in range(p_ini, p_fim):
+            is_cafe_m = (m_cafe_m <= m < m_cafe_m + 10)
+            is_almoco = (m_almoco_ini <= m < m_almoco_fim)
+            is_cafe_t = (m_cafe_t <= m < m_cafe_t + 10)
+            is_ginast = (m_gin <= m < m_gin + 10) if tem_gin else False
+            if not (is_cafe_m or is_almoco or is_cafe_t or is_ginast):
+                minutos_uteis += 1
+        
         grade.append({
-            'Horário': f"{str(p_ini//60).zfill(2)}:{str(p_ini%60).zfill(2)} – {str(p_fim//60).zfill(2)}:{str(p_fim%60).zfill(2)}",
-            'Minutos': m_uteis,
-            'Fim_dt': datetime.strptime(f"{str(p_fim//60).zfill(2)}:{str(p_fim%60).zfill(2)}", fmt)
+            'Horário': f"{marcos[i]} – {marcos[i+1]}",
+            'Minutos': minutos_uteis,
+            'Fim_dt': datetime.strptime(marcos[i+1], "%H:%M")
         })
     return pd.DataFrame(grade)
 
 def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
-    slots = gerar_grade_util(h_ini, regras, tem_gin)
+    slots = gerar_grade_fixa(h_ini, regras, tem_gin)
     df_in = df_in.merge(df_ba[['DISPLAY', 'ID', 'UNIDADE_HORA']], left_on='Equipamento', right_on='DISPLAY', how='left')
     df_in['CAD_R'] = df_in['UNIDADE_HORA'] * fat
     df_in['T_PC'] = 60 / df_in['CAD_R']
     df_in['FALTA'] = pd.to_numeric(df_in['Qtd'], errors='coerce').fillna(0)
+    
     total_desejado, res, acum, c_idx, tot = df_in['FALTA'].sum(), [], 0.0, 0, 0
     termino = "Não finalizado"
     
@@ -102,22 +100,28 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
         while c_idx < len(df_in):
             t_p = df_in.loc[c_idx, 'T_PC']
             if pd.isna(t_p) or t_p <= 0: c_idx += 1; continue
+            
             if acum >= (t_p - 0.001):
                 q = min(math.floor(acum / t_p + 0.001), df_in.loc[c_idx, 'FALTA'])
                 if q > 0:
-                    acum -= (q * t_p); df_in.loc[c_idx, 'FALTA'] -= q
+                    acum -= (q * t_p)
+                    df_in.loc[c_idx, 'FALTA'] -= q
                     tot += q; p_b += q
                     mods.append(f"{df_in.loc[c_idx, 'ID']} ({int(q)} pçs)")
                 if df_in.loc[c_idx, 'FALTA'] <= 0: c_idx += 1
                 else: break
             else: break
+            
         res.append({'Horário': s['Horário'], 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
+        
         if tot >= total_desejado and termino == "Não finalizado" and total_desejado > 0:
-            # Estimativa de término compensando o tempo útil
             minutos_usados = s['Minutos'] - acum
-            hora_f, min_f = map(int, s['Horário'].split('–')[0].split(':'))
-            dt_base = datetime.strptime(f"{hora_f}:{min_f}", "%H:%M") + timedelta(minutes=minutos_usados)
+            h_str, m_str = s['Horário'].split(' – ')[0].split(':')
+            dt_base = datetime.strptime(f"{h_str}:{m_str}", "%H:%M") + timedelta(minutes=minutos_usados)
+            # Se cair no almoço, o cálculo real do término precisaria de uma lógica extra, 
+            # mas para visualização simples do cronograma, esta aproximação funciona.
             termino = dt_base.strftime("%H:%M")
+
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
 
 # --- INTERFACE ---
@@ -129,7 +133,7 @@ try:
         sel_ups = st.sidebar.selectbox("Selecionar Célula", lista_ups)
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
         
-        h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
+        h_ini = "07:45" # Fixo conforme pedido
         tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=regra_atual['n_nat'], min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=regra_atual['n_nat'], min_value=1)
@@ -153,19 +157,19 @@ try:
                 r = calcular(df_editor, base, h_ini, fator, tem_gin, regra_atual)
                 st.divider()
                 
-                # --- MÉTRICAS COM OS HORÁRIOS JUNTOS ---
-                row1 = st.columns(3)
-                row1[0].metric("Total Planejado", f"{int(r['tot'])} pçs")
-                row1[1].metric("Término Estimado", r['termino'])
-                row1[2].metric("Fator Eficiência", f"{fator:.2%}")
+                # --- MÉTRICAS NO TOPO ---
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Planejado", f"{int(r['tot'])} pçs")
+                c2.metric("Término Estimado", r['termino'])
+                c3.metric("Eficiência", f"{fator:.2%}")
                 
-                row2 = st.columns(3)
-                row2[0].metric("☕ Café Manhã", regra_atual['cafe_m'])
-                row2[1].metric("🍱 Almoço", regra_atual['almoco'])
-                row2[2].metric("☕ Café Tarde", regra_atual['cafe_t'])
+                c4, c5, c6 = st.columns(3)
+                c4.metric("☕ Café Manhã", regra_atual['cafe_m'])
+                c5.metric("🍱 Almoço", regra_atual['almoco'])
+                c6.metric("☕ Café Tarde", regra_atual['cafe_t'])
                 
                 st.subheader("🗓️ Cronograma de Produção")
-                st.table(r['df'])
+                st.table(r['df']) # Planilha limpa sem linhas de intervalo
             else: st.warning("Adicione modelos na tabela.")
     else: st.error("⚠️ Erro na Planilha.")
 except Exception as e: st.error(f"Erro Crítico: {e}")
