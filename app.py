@@ -1,5 +1,5 @@
 import streamlit as st
-import pandas as pd
+import pd as pd
 import math
 from datetime import datetime, timedelta
 
@@ -54,19 +54,21 @@ def carregar_base():
 
 def gerar_grade(h_ini, tem_gin, regras):
     fmt = "%H:%M"
+    # Marcos de exibição na tabela
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30", "18:30"]
     
     def para_min(h_str):
-        h, m = map(int, h_str.split(':'))
-        return h * 60 + m
-
+        try:
+            h, m = map(int, h_str.split(':'))
+            return h * 60 + m
+        except: return 465 # Default 07:45 se der erro
+    
     m_cafe_m = para_min(regras['cafe_m'])
     m_almoco_ini = para_min(regras['almoco'])
     m_almoco_fim = m_almoco_ini + 60
     m_cafe_t = para_min(regras['cafe_t'])
     
-    try: atual_min = para_min(h_ini)
-    except: atual_min = para_min("07:45")
+    atual_min = para_min(h_ini)
     
     grade = []
     for marco_s in marcos:
@@ -143,7 +145,9 @@ try:
         
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
         
-        h_ini = st.sidebar.text_input("Início da Produção", value="07:12")
+        # AJUSTADO: Agora o valor padrão é 07:45
+        h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
+        
         tem_gin = st.sidebar.checkbox("Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=regra_atual['n_nat'], min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=regra_atual['n_nat'], min_value=1)
