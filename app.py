@@ -40,7 +40,7 @@ def carregar_base():
             descricao = str(dados.iloc[i, 8]).strip()
             cel_na_linha = str(dados.iloc[i, 9]).strip().upper()
 
-            if "UPS" in cel_na_linha or "ACS" in cel_na_linha:
+            if any(x in cel_na_linha for x in ["UPS", "ACS", "ACE"]):
                 celula_atual = str(dados.iloc[i, 9]).strip()
             
             if modelo != 'nan' and len(modelo) > 3 and not pd.isna(unidade):
@@ -52,74 +52,74 @@ def carregar_base():
     except Exception as e:
         st.error(f"Erro na leitura: {e}"); return pd.DataFrame()
 
-def gerar_grade(h_ini, tem_gin, regras):
+def gerar_grade_com_eventos(h_ini, regras, tem_gin):
     fmt = "%H:%M"
-    marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30", "18:30"]
-    
     def para_min(h_str):
-        try:
-            h, m = map(int, h_str.split(':'))
-            return h * 60 + m
-        except: return 465 # 07:45
-    
-    m_cafe_m = para_min(regras['cafe_m'])
-    m_almoco_ini = para_min(regras['almoco'])
-    m_almoco_fim = m_almoco_ini + 60
-    m_cafe_t = para_min(regras['cafe_t'])
-    
-    atual_min = para_min(h_ini)
-    
-    grade = []
-    for marco_s in marcos:
-        m_marco = para_min(marco_s)
-        if m_marco > atual_min:
-            def contar_producao(ini, fim):
-                minutos_uteis = 0
-                for m in range(ini, fim):
-                    is_cafe_m = (m_cafe_m <= m < m_cafe_m + 10)
-                    is_almoco = (m_almoco_ini <= m < m_almoco_fim)
-                    is_cafe_t = (m_cafe_t <= m < m_cafe_t + 10)
-                    is_ginast = (para_min("09:30") <= m < para_min("09:40")) if tem_gin else False
-                    if not (is_cafe_m or is_almoco or is_cafe_t or is_ginast):
-                        minutos_uteis += 1
-                return minutos_uteis
+        h, m = map(int, h_str.split(':'))
+        return h * 60 + m
 
-            minutos = contar_producao(atual_min, m_marco)
-            grade.append({'Horário': f"{str(atual_min//60).zfill(2)}:{str(atual_min%60).zfill(2)}–{marco_s}", 
-                          'Minutos': minutos, 'Fim_dt': datetime.strptime(marco_s, fmt)})
-            
-            for j in range(marcos.index(marco_s), len(marcos) - 1):
-                m_ini = para_min(marcos[j])
-                m_fim = para_min(marcos[j+1])
-                minutos = contar_producao(m_ini, m_fim)
-                grade.append({'Horário': f"{marcos[j]}–{marcos[j+1]}", 'Minutos': minutos, 'Fim_dt': datetime.strptime(marcos[j+1], fmt)})
-            break
+    m_ini = para_min(h_ini)
+    eventos = [
+        {"nome": "☕ CAFÉ MANHÃ", "inicio": para_min(regras['cafe_m']), "duracao": 10},
+        {"nome": "🍱 ALMOÇO", "inicio": para_min(regras['almoco']), "duracao": 60},
+        {"nome": "☕ CAFÉ TARDE", "inicio": para_min(regras['cafe_t']), "duracao": 10}
+    ]
+    if tem_gin:
+        eventos.append({"nome": "🤸 GINÁSTICA", "inicio": para_min("09:30"), "duracao": 10})
+    
+    eventos = sorted(eventos, key=lambda x: x['inicio'])
+    
+    # Marcos de tempo para quebrar a tabela (de hora em hora)
+    marcos = [480, 540, 600, 660, 720, 780, 840, 900, 960, 1020, 1080] # 08h as 18h
+    
+    pontos = sorted(list(set([m_ini] + marcos + [e['inicio'] for e in eventos] + [e['inicio']+e['duracao'] for e in eventos])))
+    pontos = [p for p in pontos if p >= m_ini and p <= 1110] # até 18:30
+
+    grade = []
+    for i in range(len(pontos)-1):
+        p_ini, p_fim = pontos[i], pontos[j := i+1]
+        dur_total = p_fim - p_ini
+        
+        # Verifica se é um evento
+        nome_evento = None
+        for e in eventos:
+            if p_ini >= e['inicio'] and p_fim <= (e['inicio'] + e['duracao']):
+                nome_evento = e['nome']
+                break
+        
+        dur_util = 0 if nome_evento else dur_total
+        
+        grade.append({
+            'Horário': f"{str(p_ini//60).zfill(2)}:{str(p_ini%60).zfill(2)} – {str(p_fim//60).zfill(2)}:{str(p_fim%60).zfill(2)}",
+            'Minutos': dur_util,
+            'Evento': nome_evento,
+            'Fim_dt': datetime.strptime(f"{str(p_fim//60).zfill(2)}:{str(p_fim%60).zfill(2)}", fmt)
+        })
     return pd.DataFrame(grade)
 
 def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
-    slots = gerar_grade(h_ini, tem_gin, regras)
+    slots = gerar_grade_com_eventos(h_ini, regras, tem_gin)
     df_in = df_in.merge(df_ba[['DISPLAY', 'ID', 'UNIDADE_HORA']], left_on='Equipamento', right_on='DISPLAY', how='left')
     df_in['CAD_R'] = df_in['UNIDADE_HORA'] * fat
     df_in['T_PC'] = 60 / df_in['CAD_R']
     df_in['FALTA'] = pd.to_numeric(df_in['Qtd'], errors='coerce').fillna(0)
+    
     total_desejado, res, acum, c_idx, tot = df_in['FALTA'].sum(), [], 0.0, 0, 0
-    termino = "Incompleto"
+    termino = "Não finalizado"
     
     for _, s in slots.iterrows():
-        hor, t_b, f_dt = s['Horário'], s['Minutos'], s['Fim_dt']
-        if t_b <= 0:
-            res.append({'Horário': hor, 'Modelos': 'INTERVALO / ALMOÇO', 'Peças': 0, 'Acumulada': tot})
+        if s['Evento']:
+            res.append({'Horário': s['Horário'], 'Modelos': s['Evento'], 'Peças': 0, 'Acumulada': tot})
             continue
             
-        acum += t_b
+        acum += s['Minutos']
         p_b, mods = 0, []
         while c_idx < len(df_in):
             t_p = df_in.loc[c_idx, 'T_PC']
             if pd.isna(t_p) or t_p <= 0: c_idx += 1; continue
             
             if acum >= (t_p - 0.001):
-                qtd_possivel = math.floor(acum / t_p + 0.001)
-                q = min(qtd_possivel, df_in.loc[c_idx, 'FALTA'])
+                q = min(math.floor(acum / t_p + 0.001), df_in.loc[c_idx, 'FALTA'])
                 if q > 0:
                     acum -= (q * t_p)
                     df_in.loc[c_idx, 'FALTA'] -= q
@@ -129,9 +129,15 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
                 else: break
             else: break
             
-        res.append({'Horário': hor, 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
-        if tot >= total_desejado and termino == "Incompleto" and total_desejado > 0:
-            termino = (f_dt - timedelta(minutes=int(acum))).strftime("%H:%M")
+        res.append({'Horário': s['Horário'], 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
+        
+        if tot >= total_desejado and termino == "Não finalizado" and total_desejado > 0:
+            # Cálculo do tempo real de término dentro do bloco
+            minutos_usados = s['Minutos'] - acum
+            hora_f, min_f = map(int, s['Horário'].split('–')[0].split(':'))
+            dt_base = datetime.strptime(f"{hora_f}:{min_f}", "%H:%M") + timedelta(minutes=minutos_usados)
+            termino = dt_base.strftime("%H:%M")
+
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
 
 # --- INTERFACE ---
@@ -175,11 +181,21 @@ try:
                 r = calcular(df_editor, base, h_ini, fator, tem_gin, regra_atual)
                 st.divider()
                 m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total", f"{int(r['tot'])} pçs")
-                m2.metric("Término Real", r['termino'])
-                m3.metric("Eficiência", f"{fator:.2%}")
+                m1.metric("Total Planejado", f"{int(r['tot'])} pçs")
+                m2.metric("Término Estimado", r['termino'])
+                m3.metric("Fator Eficiência", f"{fator:.2%}")
                 m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
-                st.table(r['df'])
-            else: st.warning("Adicione os modelos.")
-    else: st.error("⚠️ Erro na Planilha.")
-except Exception as e: st.error(f"Erro Crítico: {e}")
+                
+                # Exibição estilizada: Almoço e Café ficam em destaque
+                def colorir_eventos(val):
+                    color = 'background-color: #ffcccc' if any(x in str(val) for x in ['CAFÉ', 'ALMOÇO', 'GINÁSTICA']) else ''
+                    return color
+
+                st.subheader("🗓️ Cronograma de Produção")
+                st.dataframe(r['df'].style.applymap(colorir_eventos, subset=['Modelos']), use_container_width=True)
+            else:
+                st.warning("Adicione modelos na tabela acima para gerar o cronograma.")
+    else:
+        st.error("⚠️ Estrutura não detectada na planilha.")
+except Exception as e:
+    st.error(f"Erro Crítico: {e}")
