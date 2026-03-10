@@ -66,7 +66,7 @@ def gerar_grade(h_ini, tem_gin, regras):
     m_cafe_t = para_min(regras['cafe_t'])
     
     try: atual_min = para_min(h_ini)
-    except: atual_min = para_min("07:12")
+    except: atual_min = para_min("07:45")
     
     grade = []
     for marco_s in marcos:
