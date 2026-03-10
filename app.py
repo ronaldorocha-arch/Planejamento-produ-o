@@ -85,14 +85,23 @@ def gerar_grade(h_ini, tem_gin, regras):
                 return minutos_uteis
 
             minutos = contar_producao(atual_min, m_marco)
-            grade.append({'Horário': f"{str(atual_min//60).zfill(2)}:{str(atual_min%60).zfill(2)}–{marco_s}", 
-                          'Minutos': minutos, 'Fim_dt': datetime.strptime(marco_s, fmt)})
+            grade.append({
+                'Horário': f"{str(atual_min//60).zfill(2)}:{str(atual_min%60).zfill(2)}–{marco_s}", 
+                'Minutos': minutos, 
+                'Fim_dt': datetime.strptime(marco_s, fmt),
+                'is_almoco_bloco': (m_almoco_ini >= atual_min and m_almoco_ini < m_marco)
+            })
             
             for j in range(marcos.index(marco_s), len(marcos) - 1):
                 m_ini = para_min(marcos[j])
                 m_fim = para_min(marcos[j+1])
                 minutos = contar_producao(m_ini, m_fim)
-                grade.append({'Horário': f"{marcos[j]}–{marcos[j+1]}", 'Minutos': minutos, 'Fim_dt': datetime.strptime(marcos[j+1], fmt)})
+                grade.append({
+                    'Horário': f"{marcos[j]}–{marcos[j+1]}", 
+                    'Minutos': minutos, 
+                    'Fim_dt': datetime.strptime(marcos[j+1], fmt),
+                    'is_almoco_bloco': (m_almoco_ini >= m_ini and m_almoco_ini < m_fim)
+                })
             break
     return pd.DataFrame(grade)
 
@@ -107,8 +116,12 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
     
     for _, s in slots.iterrows():
         hor, t_b, f_dt = s['Horário'], s['Minutos'], s['Fim_dt']
-        if t_b <= 0:
-            res.append({'Horário': hor, 'Modelos': 'INTERVALO / ALMOÇO', 'Peças': 0, 'Acumulada': tot})
+        
+        # LÓGICA CORRIGIDA: Se minutos úteis forem baixos e for hora de almoço, marca.
+        if s['is_almoco_bloco'] or t_b <= 0:
+            res.append({'Horário': hor, 'Modelos': 'ALMOÇO / INTERVALO', 'Peças': 0, 'Acumulada': tot})
+            # Se ainda houver minutos úteis no bloco do almoço (ex: almoço começa 11:50), acumula para o próximo bloco produtivo
+            acum += t_b 
             continue
             
         acum += t_b
