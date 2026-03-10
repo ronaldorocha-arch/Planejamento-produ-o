@@ -48,43 +48,47 @@ def carregar_base():
     except Exception as e:
         st.error(f"Erro na leitura: {e}"); return pd.DataFrame()
 
-def gerar_grade_com_eventos(h_ini, regras, tem_gin):
+def gerar_grade_util(h_ini, regras, tem_gin):
     fmt = "%H:%M"
     def para_min(h_str):
         h, m = map(int, h_str.split(':'))
         return h * 60 + m
 
     m_ini = para_min(h_ini)
-    eventos = [
-        {"nome": "☕ CAFÉ MANHÃ", "inicio": para_min(regras['cafe_m']), "duracao": 10},
-        {"nome": "🍱 ALMOÇO", "inicio": para_min(regras['almoco']), "duracao": 60},
-        {"nome": "☕ CAFÉ TARDE", "inicio": para_min(regras['cafe_t']), "duracao": 10}
-    ]
-    if tem_gin: eventos.append({"nome": "🤸 GINÁSTICA", "inicio": para_min("09:30"), "duracao": 10})
+    m_cafe_m = para_min(regras['cafe_m'])
+    m_almoco_ini = para_min(regras['almoco'])
+    m_almoco_fim = m_almoco_ini + 60
+    m_cafe_t = para_min(regras['cafe_t'])
     
-    eventos = sorted(eventos, key=lambda x: x['inicio'])
     marcos = [480, 540, 600, 660, 720, 780, 840, 900, 960, 1020, 1080]
-    pontos = sorted(list(set([m_ini] + marcos + [e['inicio'] for e in eventos] + [e['inicio']+e['duracao'] for e in eventos])))
+    pontos = sorted(list(set([m_ini] + marcos)))
     pontos = [p for p in pontos if p >= m_ini and p <= 1110]
 
     grade = []
     for i in range(len(pontos)-1):
         p_ini, p_fim = pontos[i], pontos[i+1]
-        nome_evento = None
-        for e in eventos:
-            if p_ini >= e['inicio'] and p_fim <= (e['inicio'] + e['duracao']):
-                nome_evento = e['nome']; break
         
+        def calc_uteis(ini, fim):
+            minutos_uteis = 0
+            for m in range(ini, fim):
+                is_cafe_m = (m_cafe_m <= m < m_cafe_m + 10)
+                is_almoco = (m_almoco_ini <= m < m_almoco_fim)
+                is_cafe_t = (m_cafe_t <= m < m_cafe_t + 10)
+                is_ginast = (para_min("09:30") <= m < para_min("09:40")) if tem_gin else False
+                if not (is_cafe_m or is_almoco or is_cafe_t or is_ginast):
+                    minutos_uteis += 1
+            return minutos_uteis
+
+        m_uteis = calc_uteis(p_ini, p_fim)
         grade.append({
             'Horário': f"{str(p_ini//60).zfill(2)}:{str(p_ini%60).zfill(2)} – {str(p_fim//60).zfill(2)}:{str(p_fim%60).zfill(2)}",
-            'Minutos': 0 if nome_evento else (p_fim - p_ini),
-            'Evento': nome_evento,
+            'Minutos': m_uteis,
             'Fim_dt': datetime.strptime(f"{str(p_fim//60).zfill(2)}:{str(p_fim%60).zfill(2)}", fmt)
         })
     return pd.DataFrame(grade)
 
 def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
-    slots = gerar_grade_com_eventos(h_ini, regras, tem_gin)
+    slots = gerar_grade_util(h_ini, regras, tem_gin)
     df_in = df_in.merge(df_ba[['DISPLAY', 'ID', 'UNIDADE_HORA']], left_on='Equipamento', right_on='DISPLAY', how='left')
     df_in['CAD_R'] = df_in['UNIDADE_HORA'] * fat
     df_in['T_PC'] = 60 / df_in['CAD_R']
@@ -93,9 +97,6 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
     termino = "Não finalizado"
     
     for _, s in slots.iterrows():
-        if s['Evento']:
-            res.append({'Horário': s['Horário'], 'Modelos': s['Evento'], 'Peças': 0, 'Acumulada': tot})
-            continue
         acum += s['Minutos']
         p_b, mods = 0, []
         while c_idx < len(df_in):
@@ -112,6 +113,7 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
             else: break
         res.append({'Horário': s['Horário'], 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
         if tot >= total_desejado and termino == "Não finalizado" and total_desejado > 0:
+            # Estimativa de término compensando o tempo útil
             minutos_usados = s['Minutos'] - acum
             hora_f, min_f = map(int, s['Horário'].split('–')[0].split(':'))
             dt_base = datetime.strptime(f"{hora_f}:{min_f}", "%H:%M") + timedelta(minutes=minutos_usados)
@@ -151,17 +153,19 @@ try:
                 r = calcular(df_editor, base, h_ini, fator, tem_gin, regra_atual)
                 st.divider()
                 
-                # --- MÉTRICAS (Cards do Topo) ---
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Total Planejado", f"{int(r['tot'])} pçs")
-                m2.metric("Término Estimado", r['termino'])
-                m3.metric("Eficiência", f"{fator:.2%}")
-                m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
+                # --- MÉTRICAS COM OS HORÁRIOS JUNTOS ---
+                row1 = st.columns(3)
+                row1[0].metric("Total Planejado", f"{int(r['tot'])} pçs")
+                row1[1].metric("Término Estimado", r['termino'])
+                row1[2].metric("Fator Eficiência", f"{fator:.2%}")
                 
-                st.subheader("🗓️ Cronograma")
-                def colorir_eventos(val):
-                    return 'background-color: #ffcccc' if any(x in str(val) for x in ['CAFÉ', 'ALMOÇO', 'GINÁSTICA']) else ''
-                st.dataframe(r['df'].style.applymap(colorir_eventos, subset=['Modelos']), use_container_width=True)
+                row2 = st.columns(3)
+                row2[0].metric("☕ Café Manhã", regra_atual['cafe_m'])
+                row2[1].metric("🍱 Almoço", regra_atual['almoco'])
+                row2[2].metric("☕ Café Tarde", regra_atual['cafe_t'])
+                
+                st.subheader("🗓️ Cronograma de Produção")
+                st.table(r['df'])
             else: st.warning("Adicione modelos na tabela.")
     else: st.error("⚠️ Erro na Planilha.")
 except Exception as e: st.error(f"Erro Crítico: {e}")
