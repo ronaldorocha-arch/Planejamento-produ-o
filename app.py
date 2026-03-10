@@ -151,13 +151,12 @@ try:
                 r = calcular(df_editor, base, h_ini, fator, tem_gin, regra_atual)
                 st.divider()
                 
-                # --- MÉTRICAS DE RESUMO (COM OS HORÁRIOS) ---
-                m1, m2, m3 = st.columns(3)
+                # --- MÉTRICAS (Cards do Topo) ---
+                m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Total Planejado", f"{int(r['tot'])} pçs")
                 m2.metric("Término Estimado", r['termino'])
-                m3.metric("Fator Eficiência", f"{fator:.2%}")
-                
-                st.write(f"🕒 **Horários da Célula:** Café Manhã: **{regra_atual['cafe_m']}** | Almoço: **{regra_atual['almoco']}** | Café Tarde: **{regra_atual['cafe_t']}**")
+                m3.metric("Eficiência", f"{fator:.2%}")
+                m4.metric("Ginástica", "SIM" if tem_gin else "NÃO")
                 
                 st.subheader("🗓️ Cronograma")
                 def colorir_eventos(val):
