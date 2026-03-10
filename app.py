@@ -1,5 +1,5 @@
 import streamlit as st
-import pd as pd
+import pandas as pd
 import math
 from datetime import datetime, timedelta
 
@@ -7,7 +7,7 @@ st.set_page_config(page_title="Planejador NHS", page_icon="🏭", layout="wide")
 
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
-# --- CONFIGURAÇÃO DE HORÁRIOS REAIS (Conforme sua lista) ---
+# --- CONFIGURAÇÃO DE HORÁRIOS REAIS ---
 REGRAS_HORARIOS = {
     "UPS - 1": {"cafe_m": "09:20", "almoco": "11:30", "cafe_t": "15:20", "n_nat": 5},
     "UPS - 2": {"cafe_m": "09:00", "almoco": "11:30", "cafe_t": "15:00", "n_nat": 3},
@@ -54,14 +54,13 @@ def carregar_base():
 
 def gerar_grade(h_ini, tem_gin, regras):
     fmt = "%H:%M"
-    # Marcos de exibição na tabela
     marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30", "18:30"]
     
     def para_min(h_str):
         try:
             h, m = map(int, h_str.split(':'))
             return h * 60 + m
-        except: return 465 # Default 07:45 se der erro
+        except: return 465 # 07:45
     
     m_cafe_m = para_min(regras['cafe_m'])
     m_almoco_ini = para_min(regras['almoco'])
@@ -145,10 +144,8 @@ try:
         
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
         
-        # AJUSTADO: Agora o valor padrão é 07:45
         h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
-        
-        tem_gin = st.sidebar.checkbox("Ginástica Laboral?", value=False)
+        tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=regra_atual['n_nat'], min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=regra_atual['n_nat'], min_value=1)
         fator = n_dia / n_nat
