@@ -140,7 +140,7 @@ try:
                 v_padrao = PADROES_N[key]
                 break
 
-        h_ini = st.sidebar.text_input("Início da Produção", value="08:00")
+        h_ini = st.sidebar.text_input("Início da Produção", value="7:45")
         tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
         n_nat = st.sidebar.number_input("N Natural", value=v_padrao, min_value=1)
         n_dia = st.sidebar.number_input("N do Dia", value=v_padrao, min_value=1)
