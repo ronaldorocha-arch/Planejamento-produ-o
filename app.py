@@ -177,4 +177,18 @@ try:
                 st.rerun()
             
             # Exibe cada planejamento salvo
-            for idx, plano in enumerate(st.session_state["relatorio_geral
+            for idx, plano in enumerate(st.session_state["relatorio_geral"]):
+                with st.container():
+                    st.subheader(f"🏭 {plano['ups']} | Término: {plano['termino']} | Total: {int(plano['total'])} pçs")
+                    
+                    def style_table(row):
+                        return ['background-color: #f0f0f0; font-weight: bold'] * len(row) if "🍱" in str(row.Modelos) else [''] * len(row)
+                    
+                    # Usamos st.table para impressão pois ele renderiza a tabela inteira sem scroll
+                    st.table(plano['dados'].style.apply(style_table, axis=1))
+                    st.write("") 
+        else:
+            st.info("O relatório está vazio. Configure uma UPS e clique em 'Adicionar' acima.")
+
+    else: st.error("⚠️ Verifique a planilha.")
+except Exception as e: st.error(f"Erro Crítico: {e}")
