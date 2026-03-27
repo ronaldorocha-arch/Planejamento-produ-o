@@ -43,8 +43,7 @@ def carregar_base():
             if modelo != 'nan' and len(modelo) > 3 and not pd.isna(unidade):
                 lista_final.append({
                     'ID': modelo, 'UNIDADE_HORA': unidade, 'DESCRICAO': descricao,
-                    'CELULA': celula_atual, 
-                    # Aqui incluímos a unidade para você ver na hora de selecionar
+                    'CEL_ORIGEM': celula_atual, 
                     'DISPLAY': f"[{celula_atual}] {modelo} - {descricao} ({int(unidade)} pç/h)"
                 })
         return pd.DataFrame(lista_final)
@@ -82,14 +81,31 @@ def gerar_grade_fixa(h_ini_input, regras, tem_gin):
         grade.append({'Horário': f"{pontos_horario[i]} – {pontos_horario[i+1]}", 'Minutos': minutos_uteis, 'Label': "🍱 INTERVALO DE ALMOÇO" if is_almoco_bloco else None})
     return pd.DataFrame(grade)
 
-def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
-    slots = gerar_grade_fixa(h_ini, regras, tem_gin)
-    df_in = df_in.merge(df_ba[['DISPLAY', 'ID', 'UNIDADE_HORA']], left_on='Equipamento', right_on='DISPLAY', how='left')
-    df_in['CAD_R'] = df_in['UNIDADE_HORA'] * fat
+def calcular(df_in, df_ba, h_ini, n_dia, tem_gin, regra_destino, nome_cel_destino):
+    slots = gerar_grade_fixa(h_ini, regra_destino, tem_gin)
+    
+    # Cruzamos os dados para saber a CEL_ORIGEM de cada modelo selecionado
+    df_in = df_in.merge(df_ba[['DISPLAY', 'ID', 'UNIDADE_HORA', 'CEL_ORIGEM']], left_on='Equipamento', right_on='DISPLAY', how='left')
+    
+    def aplicar_conversao(row):
+        u_base = row['UNIDADE_HORA']
+        origem = row['CEL_ORIGEM']
+        
+        # Obtém o N Natural da célula de onde o produto veio
+        # Se não achar a célula nas regras, assume o N Natural da destino para não dar erro
+        n_nat_origem = REGRAS_HORARIOS.get(origem, {"n_nat": regra_destino['n_nat']})['n_nat']
+        
+        # REGRA DE CONVERSÃO:
+        # (Capacidade Base / N da Origem) * N de pessoas que estão trabalhando hoje
+        return (u_base / n_nat_origem) * n_dia
+
+    df_in['CAD_R'] = df_in.apply(aplicar_conversao, axis=1)
     df_in['T_PC'] = 60 / df_in['CAD_R']
     df_in['FALTA'] = pd.to_numeric(df_in['Qtd'], errors='coerce').fillna(0)
+    
     total_desejado, res, acum, c_idx, tot = df_in['FALTA'].sum(), [], 0.0, 0, 0
     termino = "Não finalizado"
+    
     for _, s in slots.iterrows():
         if s['Label']:
             res.append({'Horário': s['Horário'], 'Modelos': s['Label'], 'Peças': 0, 'Acumulada': tot})
@@ -108,13 +124,15 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
                 if df_in.loc[c_idx, 'FALTA'] <= 0: c_idx += 1
                 else: break
             else: break
-        # Tabela final SEM a coluna Unid/h
+        
         res.append({'Horário': s['Horário'], 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
+        
         if tot >= total_desejado and termino == "Não finalizado" and total_desejado > 0:
             m_usados = s['Minutos'] - acum
             h_str, m_str = s['Horário'].split(' – ')[0].split(':')
             dt_base = datetime.strptime(f"{h_str}:{m_str}", "%H:%M") + timedelta(minutes=m_usados)
             termino = dt_base.strftime("%H:%M")
+            
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
 
 # --- INTERFACE ---
@@ -123,19 +141,24 @@ try:
     if not base.empty:
         st.sidebar.markdown("### Tecnologia de Processos")
         st.sidebar.title("📋 Planejamento de Produção")
-        lista_ups = sorted(base['CELULA'].unique().tolist())
+        lista_ups = sorted(base['CEL_ORIGEM'].unique().tolist())
         default_index = lista_ups.index("UPS - 1") if "UPS - 1" in lista_ups else 0
-        sel_ups = st.sidebar.selectbox("Selecionar Célula", lista_ups, index=default_index)
+        sel_ups = st.sidebar.selectbox("Selecionar Célula de Trabalho", lista_ups, index=default_index)
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
+        
         liberar_modelos = st.sidebar.checkbox("🔓 Ver modelos de outras UPS?", value=False)
         h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
         tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
-        n_nat = st.sidebar.number_input("N Natural", value=regra_atual['n_nat'], min_value=1)
-        n_dia = st.sidebar.number_input("N do Dia", value=regra_atual['n_nat'], min_value=1)
-        fator = n_dia / n_nat
+        
+        # N Natural da Célula que está recebendo a produção
+        n_nat = regra_atual['n_nat']
+        # N do Dia: Quantas pessoas estão na linha HOJE
+        n_dia = st.sidebar.number_input(f"Nº de Pessoas hoje na {sel_ups}", value=n_nat, min_value=1)
+        
+        # Eficiência baseada na lotação da célula de destino
+        fator_eficiencia = n_dia / n_nat
 
-        opcoes = sorted(base['DISPLAY'].tolist()) if liberar_modelos else sorted(base[base['CELULA'] == sel_ups]['DISPLAY'].tolist())
-        if liberar_modelos: st.sidebar.warning("Modelos de outras células liberados.")
+        opcoes = sorted(base['DISPLAY'].tolist()) if liberar_modelos else sorted(base[base['CEL_ORIGEM'] == sel_ups]['DISPLAY'].tolist())
 
         col1, col2 = st.columns([0.8, 0.2])
         with col1: st.header(f"📋 Planejamento: {sel_ups}")
@@ -144,23 +167,22 @@ try:
                 st.session_state["reset_key"] = st.session_state.get("reset_key", 0) + 1
                 st.rerun()
 
-        # Na tabela de seleção, o DISPLAY já contém a Unidade/Hora
         df_editor = st.data_editor(pd.DataFrame(columns=["Equipamento", "Qtd"]), num_rows="dynamic", use_container_width=True,
-            column_config={"Equipamento": st.column_config.SelectboxColumn("Equipamento (Selecione o modelo)", options=opcoes, required=True), "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)}, 
+            column_config={
+                "Equipamento": st.column_config.SelectboxColumn("Equipamento (Selecione o modelo)", options=opcoes, required=True), 
+                "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)
+            }, 
             key=f"ed_{sel_ups}_{st.session_state.get('reset_key', 0)}")
 
         if st.button("🚀 Gerar Planejamento"):
             if not df_editor.empty:
-                r = calcular(df_editor, base, h_ini, fator, tem_gin, regra_atual)
+                r = calcular(df_editor, base, h_ini, n_dia, tem_gin, regra_atual, sel_ups)
                 st.divider()
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Total Planejado", f"{int(r['tot'])} pçs")
                 c2.metric("Término Estimado", r['termino'])
-                c3.metric("Eficiência", f"{fator:.2%}")
-                c4, c5, c6 = st.columns(3)
-                c4.metric("☕ Café M", regra_atual['cafe_m'])
-                c5.metric("🍱 Almoço", regra_atual['almoco'])
-                c6.metric("☕ Café T", regra_atual['cafe_t'])
+                c3.metric("Lotação da Linha", f"{n_dia} pessoas")
+                
                 st.subheader("🗓️ Cronograma de Produção")
                 def style_table(row):
                     return ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row) if "🍱" in str(row.Modelos) else [''] * len(row)
