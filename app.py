@@ -121,7 +121,7 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
 try:
     base = carregar_base()
     if not base.empty:
-        st.sidebar.markdown("### Tecnologia de Processos")
+        st.sidebar.markdown("### PAÍNEL DE TESTES")
         st.sidebar.title("📋 Planejamento de Produção")
         lista_ups = sorted(base['CELULA'].unique().tolist())
         default_index = lista_ups.index("UPS - 1") if "UPS - 1" in lista_ups else 0
