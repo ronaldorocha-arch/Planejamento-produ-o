@@ -21,17 +21,19 @@ REGRAS_HORARIOS = {
     "ACS - 01": {"cafe_m": "09:50", "almoco": "11:45", "cafe_t": "15:50", "n_nat": 3},
 }
 
-# --- FUNÇÃO DE CLIMA (SEGURA) ---
+# --- FUNÇÃO DE CLIMA CORRIGIDA ---
 def pegar_clima():
     try:
-        # Consulta simples à API wttr.in (específica para Curitiba)
-        url = "https://wttr.in/Curitiba?format=%t"
+        # Puxa temperatura e condição (ex: Sol, Chuva) em português
+        url = "https://wttr.in/Curitiba?format=%c+%t+%C&lang=pt"
         response = requests.get(url, timeout=3)
         if response.status_code == 200:
-            return response.text.strip()
-        return "N/A"
+            texto = response.text.strip()
+            # Limpa caracteres especiais de codificação
+            return texto.encode('latin1').decode('utf8')
+        return "Clima indisponível"
     except:
-        return "Indisponível"
+        return "Clima indisponível"
 
 @st.cache_data(ttl=5)
 def carregar_base():
@@ -67,50 +69,37 @@ def gerar_grade_fixa(h_ini_input, regras, tem_gin):
     def para_min(h_str):
         h, m = map(int, h_str.split(':'))
         return h * 60 + m
-
     m_cafe_m = para_min(regras['cafe_m'])
-    m_almoco_padrao_ini = para_min("11:30")
-    m_almoco_padrao_fim = para_min("12:30")
+    m_alm_i, m_alm_f = para_min("11:30"), para_min("12:30")
     m_cafe_t = para_min(regras['cafe_t'])
     m_gin = para_min("09:30")
-
-    marcos_estaticos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
-    pontos_horario = [h_ini_input] + [m for m in marcos_estaticos if para_min(m) > para_min(h_ini_input)]
-    
+    marcos = ["08:30", "09:30", "10:30", "11:30", "12:30", "13:30", "14:30", "15:30", "16:30", "17:30"]
+    pontos = [h_ini_input] + [m for m in marcos if para_min(m) > para_min(h_ini_input)]
     grade = []
-    for i in range(len(pontos_horario)-1):
-        p_ini = para_min(pontos_horario[i])
-        p_fim = para_min(pontos_horario[i+1])
-        is_almoco_bloco = (p_ini == m_almoco_padrao_ini and p_fim == m_almoco_padrao_fim)
-        minutos_uteis = 0
-        if not is_almoco_bloco:
-            for m in range(p_ini, p_fim):
-                is_cafe_m = (m_cafe_m <= m < m_cafe_m + 10)
-                is_cafe_t = (m_cafe_t <= m < m_cafe_t + 10)
-                is_ginast = (m_gin <= m < m_gin + 10) if tem_gin else False
-                is_almoco = (m_almoco_padrao_ini <= m < m_almoco_padrao_fim)
-                if not (is_cafe_m or is_cafe_t or is_ginast or is_almoco):
-                    minutos_uteis += 1
-        grade.append({'Horário': f"{pontos_horario[i]} – {pontos_horario[i+1]}", 'Minutos': minutos_uteis, 'Label': "🍱 INTERVALO DE ALMOÇO" if is_almoco_bloco else None})
+    for i in range(len(pontos)-1):
+        p_i, p_f = para_min(pontos[i]), para_min(pontos[i+1])
+        is_alm = (p_i == m_alm_i and p_f == m_alm_f)
+        min_u = 0
+        if not is_alm:
+            for m in range(p_i, p_f):
+                if not ((m_cafe_m <= m < m_cafe_m+10) or (m_cafe_t <= m < m_cafe_t+10) or (tem_gin and m_gin <= m < m_gin+10) or (m_alm_i <= m < m_alm_f)):
+                    min_u += 1
+        grade.append({'Horário': f"{pontos[i]} – {pontos[i+1]}", 'Minutos': min_u, 'Label': "🍱 INTERVALO DE ALMOÇO" if is_alm else None})
     return pd.DataFrame(grade)
 
 def calcular(df_in, df_ba, h_ini, n_dia, tem_gin, regra_destino, nome_cel_destino):
     slots = gerar_grade_fixa(h_ini, regra_destino, tem_gin)
     df_in = df_in.merge(df_ba[['DISPLAY', 'ID', 'UNIDADE_HORA', 'CEL_ORIGEM']], left_on='Equipamento', right_on='DISPLAY', how='left')
-    
     def aplicar_conversao(row):
-        u_base = row['UNIDADE_HORA']
-        origem = row['CEL_ORIGEM']
-        n_nat_origem = REGRAS_HORARIOS.get(origem, {"n_nat": regra_destino['n_nat']})['n_nat']
-        return (u_base / n_nat_origem) * n_dia
-
+        u_b = row['UNIDADE_HORA']
+        orig = row['CEL_ORIGEM']
+        n_orig = REGRAS_HORARIOS.get(orig, {"n_nat": regra_destino['n_nat']})['n_nat']
+        return (u_b / n_orig) * n_dia
     df_in['CAD_R'] = df_in.apply(aplicar_conversao, axis=1)
     df_in['T_PC'] = 60 / df_in['CAD_R']
     df_in['FALTA'] = pd.to_numeric(df_in['Qtd'], errors='coerce').fillna(0)
-    
-    total_desejado, res, acum, c_idx, tot = df_in['FALTA'].sum(), [], 0.0, 0, 0
+    total_d, res, acum, c_idx, tot = df_in['FALTA'].sum(), [], 0.0, 0, 0
     termino = "Não finalizado"
-    
     for _, s in slots.iterrows():
         if s['Label']:
             res.append({'Horário': s['Horário'], 'Modelos': s['Label'], 'Peças': 0, 'Acumulada': tot})
@@ -130,11 +119,11 @@ def calcular(df_in, df_ba, h_ini, n_dia, tem_gin, regra_destino, nome_cel_destin
                 else: break
             else: break
         res.append({'Horário': s['Horário'], 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
-        if tot >= total_desejado and termino == "Não finalizado" and total_desejado > 0:
-            m_usados = s['Minutos'] - acum
-            h_str, m_str = s['Horário'].split(' – ')[0].split(':')
-            dt_base = datetime.strptime(f"{h_str}:{m_str}", "%H:%M") + timedelta(minutes=m_usados)
-            termino = dt_base.strftime("%H:%M")
+        if tot >= total_d and termino == "Não finalizado" and total_d > 0:
+            m_u = s['Minutos'] - acum
+            h_s, m_s = s['Horário'].split(' – ')[0].split(':')
+            dt_b = datetime.strptime(f"{h_s}:{m_s}", "%H:%M") + timedelta(minutes=m_u)
+            termino = dt_b.strftime("%H:%M")
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
 
 # --- INTERFACE ---
@@ -144,28 +133,26 @@ try:
         st.sidebar.markdown("### Tecnologia de Processos")
         st.sidebar.title("📋 Planejamento NHS")
         
-        # Exibição do Clima no Topo da Sidebar
-        temp_atual = pegar_clima()
-        st.sidebar.metric("Curitiba 🌡️", temp_atual)
-        st.sidebar.divider()
-
         lista_ups = sorted(base['CEL_ORIGEM'].unique().tolist())
-        sel_ups = st.sidebar.selectbox("Selecionar Célula de Trabalho", lista_ups)
+        # FORÇA COMEÇAR NA UPS - 1
+        idx_inicial = lista_ups.index("UPS - 1") if "UPS - 1" in lista_ups else 0
+        
+        sel_ups = st.sidebar.selectbox("Selecionar Célula de Trabalho", lista_ups, index=idx_inicial)
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
         
         liberar_modelos = st.sidebar.checkbox("🔓 Ver modelos de outras UPS?", value=False)
         h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
         tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
-        
-        n_nat = regra_atual['n_nat']
-        n_dia = st.sidebar.number_input(f"Nº de Pessoas hoje na {sel_ups}", value=n_nat, min_value=1)
+        n_dia = st.sidebar.number_input(f"Nº de Pessoas hoje na {sel_ups}", value=regra_atual['n_nat'], min_value=1)
 
         opcoes = sorted(base['DISPLAY'].tolist()) if liberar_modelos else sorted(base[base['CEL_ORIGEM'] == sel_ups]['DISPLAY'].tolist())
 
-        col1, col2 = st.columns([0.8, 0.2])
-        with col1: st.header(f"📋 Planejamento: {sel_ups}")
-        with col2: 
-            if st.button("🗑️ Limpar"): 
+        # CABEÇALHO COM CLIMA AO LADO DOS BOTÕES
+        col_tit, col_clim, col_btn = st.columns([0.5, 0.3, 0.2])
+        with col_tit: st.header(f"📋 Planejamento: {sel_ups}")
+        with col_clim: st.write(f"📍 Curitiba: **{pegar_clima()}**")
+        with col_btn:
+            if st.button("🗑️ Limpar"):
                 st.session_state["reset_key"] = st.session_state.get("reset_key", 0) + 1
                 st.rerun()
 
@@ -181,11 +168,8 @@ try:
                 c1.metric("Total Planejado", f"{int(r['tot'])} pçs")
                 c2.metric("Término Estimado", r['termino'])
                 c3.metric("Lotação da Linha", f"{n_dia} pessoas")
-                
                 st.subheader("🗓️ Cronograma de Produção")
-                def style_table(row):
-                    return ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row) if "🍱" in str(row.Modelos) else [''] * len(row)
-                st.dataframe(r['df'].style.apply(style_table, axis=1), use_container_width=True)
+                st.dataframe(r['df'].style.apply(lambda row: ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row) if "🍱" in str(row.Modelos) else [''] * len(row), axis=1), use_container_width=True)
             else: st.warning("Adicione modelos.")
     else: st.error("⚠️ Verifique a planilha.")
 except Exception as e: st.error(f"Erro Crítico: {e}")
