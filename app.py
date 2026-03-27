@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import math
+import requests
 from datetime import datetime, timedelta
 
 # Configuração da página
@@ -19,6 +20,18 @@ REGRAS_HORARIOS = {
     "UPS - 8": {"cafe_m": "09:40", "almoco": "11:45", "cafe_t": "15:40", "n_nat": 4},
     "ACS - 01": {"cafe_m": "09:50", "almoco": "11:45", "cafe_t": "15:50", "n_nat": 3},
 }
+
+# --- FUNÇÃO DE CLIMA (SEGURA) ---
+def pegar_clima():
+    try:
+        # Consulta simples à API wttr.in (específica para Curitiba)
+        url = "https://wttr.in/Curitiba?format=%t"
+        response = requests.get(url, timeout=3)
+        if response.status_code == 200:
+            return response.text.strip()
+        return "N/A"
+    except:
+        return "Indisponível"
 
 @st.cache_data(ttl=5)
 def carregar_base():
@@ -83,20 +96,12 @@ def gerar_grade_fixa(h_ini_input, regras, tem_gin):
 
 def calcular(df_in, df_ba, h_ini, n_dia, tem_gin, regra_destino, nome_cel_destino):
     slots = gerar_grade_fixa(h_ini, regra_destino, tem_gin)
-    
-    # Cruzamos os dados para saber a CEL_ORIGEM de cada modelo selecionado
     df_in = df_in.merge(df_ba[['DISPLAY', 'ID', 'UNIDADE_HORA', 'CEL_ORIGEM']], left_on='Equipamento', right_on='DISPLAY', how='left')
     
     def aplicar_conversao(row):
         u_base = row['UNIDADE_HORA']
         origem = row['CEL_ORIGEM']
-        
-        # Obtém o N Natural da célula de onde o produto veio
-        # Se não achar a célula nas regras, assume o N Natural da destino para não dar erro
         n_nat_origem = REGRAS_HORARIOS.get(origem, {"n_nat": regra_destino['n_nat']})['n_nat']
-        
-        # REGRA DE CONVERSÃO:
-        # (Capacidade Base / N da Origem) * N de pessoas que estão trabalhando hoje
         return (u_base / n_nat_origem) * n_dia
 
     df_in['CAD_R'] = df_in.apply(aplicar_conversao, axis=1)
@@ -124,15 +129,12 @@ def calcular(df_in, df_ba, h_ini, n_dia, tem_gin, regra_destino, nome_cel_destin
                 if df_in.loc[c_idx, 'FALTA'] <= 0: c_idx += 1
                 else: break
             else: break
-        
         res.append({'Horário': s['Horário'], 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
-        
         if tot >= total_desejado and termino == "Não finalizado" and total_desejado > 0:
             m_usados = s['Minutos'] - acum
             h_str, m_str = s['Horário'].split(' – ')[0].split(':')
             dt_base = datetime.strptime(f"{h_str}:{m_str}", "%H:%M") + timedelta(minutes=m_usados)
             termino = dt_base.strftime("%H:%M")
-            
     return {'df': pd.DataFrame(res), 'tot': tot, 'termino': termino}
 
 # --- INTERFACE ---
@@ -140,23 +142,23 @@ try:
     base = carregar_base()
     if not base.empty:
         st.sidebar.markdown("### Tecnologia de Processos")
-        st.sidebar.title("📋 Planejamento de Produção")
+        st.sidebar.title("📋 Planejamento NHS")
+        
+        # Exibição do Clima no Topo da Sidebar
+        temp_atual = pegar_clima()
+        st.sidebar.metric("Curitiba 🌡️", temp_atual)
+        st.sidebar.divider()
+
         lista_ups = sorted(base['CEL_ORIGEM'].unique().tolist())
-        default_index = lista_ups.index("UPS - 1") if "UPS - 1" in lista_ups else 0
-        sel_ups = st.sidebar.selectbox("Selecionar Célula de Trabalho", lista_ups, index=default_index)
+        sel_ups = st.sidebar.selectbox("Selecionar Célula de Trabalho", lista_ups)
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
         
         liberar_modelos = st.sidebar.checkbox("🔓 Ver modelos de outras UPS?", value=False)
         h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
         tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
         
-        # N Natural da Célula que está recebendo a produção
         n_nat = regra_atual['n_nat']
-        # N do Dia: Quantas pessoas estão na linha HOJE
         n_dia = st.sidebar.number_input(f"Nº de Pessoas hoje na {sel_ups}", value=n_nat, min_value=1)
-        
-        # Eficiência baseada na lotação da célula de destino
-        fator_eficiencia = n_dia / n_nat
 
         opcoes = sorted(base['DISPLAY'].tolist()) if liberar_modelos else sorted(base[base['CEL_ORIGEM'] == sel_ups]['DISPLAY'].tolist())
 
@@ -168,10 +170,7 @@ try:
                 st.rerun()
 
         df_editor = st.data_editor(pd.DataFrame(columns=["Equipamento", "Qtd"]), num_rows="dynamic", use_container_width=True,
-            column_config={
-                "Equipamento": st.column_config.SelectboxColumn("Equipamento (Selecione o modelo)", options=opcoes, required=True), 
-                "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)
-            }, 
+            column_config={"Equipamento": st.column_config.SelectboxColumn("Modelo", options=opcoes, required=True), "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)}, 
             key=f"ed_{sel_ups}_{st.session_state.get('reset_key', 0)}")
 
         if st.button("🚀 Gerar Planejamento"):
