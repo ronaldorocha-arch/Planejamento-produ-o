@@ -6,10 +6,6 @@ from datetime import datetime, timedelta
 # Configuração da página
 st.set_page_config(page_title="Planejamento de Produção - NHS", page_icon="🏭", layout="wide")
 
-# Inicialização da memória do relatório (Carrinho)
-if "relatorio_geral" not in st.session_state:
-    st.session_state["relatorio_geral"] = []
-
 URL_BASE = "https://docs.google.com/spreadsheets/d/11-jv_ZFetz9xdbJY8JZwPFSc3gtB65duvtDlLEk4I2E/export?format=csv&gid=0"
 
 # --- CONFIGURAÇÃO DE HORÁRIOS REAIS ---
@@ -36,8 +32,7 @@ def carregar_base():
                 break
         if m_row == -1: return pd.DataFrame()
         dados = df_raw.iloc[m_row+1:m_row+3000].copy()
-        lista_final = []
-        celula_atual = "Indefinida"
+        lista_final, celula_atual = [], "Indefinida"
         for i in range(len(dados)):
             modelo = str(dados.iloc[i, 6]).strip()
             unidade = pd.to_numeric(dados.iloc[i, 7], errors='coerce')
@@ -49,6 +44,7 @@ def carregar_base():
                 lista_final.append({
                     'ID': modelo, 'UNIDADE_HORA': unidade, 'DESCRICAO': descricao,
                     'CELULA': celula_atual, 
+                    # Aqui incluímos a unidade para você ver na hora de selecionar
                     'DISPLAY': f"[{celula_atual}] {modelo} - {descricao} ({int(unidade)} pç/h)"
                 })
         return pd.DataFrame(lista_final)
@@ -83,7 +79,7 @@ def gerar_grade_fixa(h_ini_input, regras, tem_gin):
                 is_almoco = (m_almoco_padrao_ini <= m < m_almoco_padrao_fim)
                 if not (is_cafe_m or is_cafe_t or is_ginast or is_almoco):
                     minutos_uteis += 1
-        grade.append({'Horário': f"{pontos_horario[i]} – {pontos_horario[i+1]}", 'Minutos': minutos_uteis, 'Label': "🍱 INTERVALO" if is_almoco_bloco else None})
+        grade.append({'Horário': f"{pontos_horario[i]} – {pontos_horario[i+1]}", 'Minutos': minutos_uteis, 'Label': "🍱 INTERVALO DE ALMOÇO" if is_almoco_bloco else None})
     return pd.DataFrame(grade)
 
 def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
@@ -112,6 +108,7 @@ def calcular(df_in, df_ba, h_ini, fat, tem_gin, regras):
                 if df_in.loc[c_idx, 'FALTA'] <= 0: c_idx += 1
                 else: break
             else: break
+        # Tabela final SEM a coluna Unid/h
         res.append({'Horário': s['Horário'], 'Modelos': " + ".join(mods) if mods else "-", 'Peças': int(p_b), 'Acumulada': int(tot)})
         if tot >= total_desejado and termino == "Não finalizado" and total_desejado > 0:
             m_usados = s['Minutos'] - acum
@@ -125,12 +122,11 @@ try:
     base = carregar_base()
     if not base.empty:
         st.sidebar.markdown("### Tecnologia de Processos")
-        st.sidebar.title("📋 Planejamento NHS")
+        st.sidebar.title("📋 Planejamento de Produção")
         lista_ups = sorted(base['CELULA'].unique().tolist())
         default_index = lista_ups.index("UPS - 1") if "UPS - 1" in lista_ups else 0
         sel_ups = st.sidebar.selectbox("Selecionar Célula", lista_ups, index=default_index)
         regra_atual = next((v for k, v in REGRAS_HORARIOS.items() if k in sel_ups), REGRAS_HORARIOS["UPS - 1"])
-        
         liberar_modelos = st.sidebar.checkbox("🔓 Ver modelos de outras UPS?", value=False)
         h_ini = st.sidebar.text_input("Início da Produção", value="07:45")
         tem_gin = st.sidebar.checkbox("Haverá Ginástica Laboral?", value=False)
@@ -139,56 +135,36 @@ try:
         fator = n_dia / n_nat
 
         opcoes = sorted(base['DISPLAY'].tolist()) if liberar_modelos else sorted(base[base['CELULA'] == sel_ups]['DISPLAY'].tolist())
+        if liberar_modelos: st.sidebar.warning("Modelos de outras células liberados.")
 
         col1, col2 = st.columns([0.8, 0.2])
-        with col1: st.header(f"⚙️ Configurando: {sel_ups}")
+        with col1: st.header(f"📋 Planejamento: {sel_ups}")
         with col2: 
-            if st.button("🗑️ Limpar Edição"): 
+            if st.button("🗑️ Limpar"): 
                 st.session_state["reset_key"] = st.session_state.get("reset_key", 0) + 1
                 st.rerun()
 
+        # Na tabela de seleção, o DISPLAY já contém a Unidade/Hora
         df_editor = st.data_editor(pd.DataFrame(columns=["Equipamento", "Qtd"]), num_rows="dynamic", use_container_width=True,
-            column_config={"Equipamento": st.column_config.SelectboxColumn("Equipamento", options=opcoes, required=True), "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)}, 
+            column_config={"Equipamento": st.column_config.SelectboxColumn("Equipamento (Selecione o modelo)", options=opcoes, required=True), "Qtd": st.column_config.NumberColumn("Qtd", min_value=0, default=0)}, 
             key=f"ed_{sel_ups}_{st.session_state.get('reset_key', 0)}")
 
-        # BOTÃO PARA SALVAR NO RELATÓRIO
-        if st.button("➕ Adicionar ao Relatório de Impressão"):
-            if not df_editor.empty and df_editor['Qtd'].sum() > 0:
-                resultado = calcular(df_editor, base, h_ini, fator, tem_gin, regra_atual)
-                # Salva no estado da sessão
-                st.session_state["relatorio_geral"].append({
-                    "ups": sel_ups,
-                    "dados": resultado['df'],
-                    "termino": resultado['termino'],
-                    "total": resultado['tot'],
-                    "eficiencia": fator
-                })
-                st.success(f"Planejamento da {sel_ups} adicionado com sucesso!")
-            else:
-                st.warning("Adicione modelos e quantidades antes de salvar.")
-
-        # --- SEÇÃO DE IMPRESSÃO ---
-        st.divider()
-        st.header("🖨️ Relatório Geral para Impressão (A4)")
-        
-        if st.session_state["relatorio_geral"]:
-            if st.button("❌ Limpar Todo o Relatório"):
-                st.session_state["relatorio_geral"] = []
-                st.rerun()
-            
-            # Exibe cada planejamento salvo
-            for idx, plano in enumerate(st.session_state["relatorio_geral"]):
-                with st.container():
-                    st.subheader(f"🏭 {plano['ups']} | Término: {plano['termino']} | Total: {int(plano['total'])} pçs")
-                    
-                    def style_table(row):
-                        return ['background-color: #f0f0f0; font-weight: bold'] * len(row) if "🍱" in str(row.Modelos) else [''] * len(row)
-                    
-                    # Usamos st.table para impressão pois ele renderiza a tabela inteira sem scroll
-                    st.table(plano['dados'].style.apply(style_table, axis=1))
-                    st.write("") 
-        else:
-            st.info("O relatório está vazio. Configure uma UPS e clique em 'Adicionar' acima.")
-
+        if st.button("🚀 Gerar Planejamento"):
+            if not df_editor.empty:
+                r = calcular(df_editor, base, h_ini, fator, tem_gin, regra_atual)
+                st.divider()
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Planejado", f"{int(r['tot'])} pçs")
+                c2.metric("Término Estimado", r['termino'])
+                c3.metric("Eficiência", f"{fator:.2%}")
+                c4, c5, c6 = st.columns(3)
+                c4.metric("☕ Café M", regra_atual['cafe_m'])
+                c5.metric("🍱 Almoço", regra_atual['almoco'])
+                c6.metric("☕ Café T", regra_atual['cafe_t'])
+                st.subheader("🗓️ Cronograma de Produção")
+                def style_table(row):
+                    return ['background-color: #fff3cd; color: #856404; font-weight: bold'] * len(row) if "🍱" in str(row.Modelos) else [''] * len(row)
+                st.dataframe(r['df'].style.apply(style_table, axis=1), use_container_width=True)
+            else: st.warning("Adicione modelos.")
     else: st.error("⚠️ Verifique a planilha.")
 except Exception as e: st.error(f"Erro Crítico: {e}")
